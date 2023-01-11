@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -31,7 +31,8 @@ from PyInstaller.building.osx import BUNDLE
 from PyInstaller.building.splash import Splash
 from PyInstaller.building.toc_conversion import DependencyProcessor
 from PyInstaller.building.utils import (
-    _check_guts_toc_mtime, _should_include_system_binary, format_binaries_and_datas, compile_pymodule
+    _check_guts_toc_mtime, _should_include_system_binary, format_binaries_and_datas, compile_pymodule,
+    add_suffix_to_extension
 )
 from PyInstaller.compat import PYDYLIB_NAMES, is_win
 from PyInstaller.depend import bindepend
@@ -438,7 +439,7 @@ class Analysis(Target):
         # calculated/analysed values
         ('_python_version', _check_guts_eq),
         ('scripts', _check_guts_toc_mtime),
-        ('pure', lambda *args: _check_guts_toc_mtime(*args, **{'pyc': 1})),
+        ('pure', _check_guts_toc_mtime),
         ('binaries', _check_guts_toc_mtime),
         ('zipfiles', _check_guts_toc_mtime),
         ('zipped_data', None),  # TODO check this, too
@@ -478,9 +479,9 @@ class Analysis(Target):
     def _check_guts(self, data, last_build):
         if Target._check_guts(self, data, last_build):
             return True
-        for fnm in self.inputs:
-            if mtime(fnm) > last_build:
-                logger.info("Building because %s changed", fnm)
+        for filename in self.inputs:
+            if mtime(filename) > last_build:
+                logger.info("Building because %s changed", filename)
                 return True
         # Now we know that none of the input parameters and none of the input files has changed. So take the values
         # calculated resp. analysed in the last run and store them in `self`.
@@ -701,16 +702,23 @@ class Analysis(Target):
             self.binding_redirects[:] = list(set(self.binding_redirects))
             logger.info("Found binding redirects: \n%s", self.binding_redirects)
 
-        # Filter binaries to adjust path of extensions that come from python's lib-dynload directory. Prefix them with
-        # lib-dynload so that we will collect them into subdirectory instead of directly into _MEIPASS
-        for idx, tpl in enumerate(self.binaries):
-            name, path, typecode = tpl
-            if (
-                typecode == 'EXTENSION' and not os.path.dirname(os.path.normpath(name))
-                and os.path.basename(os.path.dirname(path)) == 'lib-dynload'
-            ):
-                name = os.path.join('lib-dynload', name)
-                self.binaries[idx] = (name, path, typecode)
+        # Convert extension module names into full filenames, and append suffix. Ensure that extensions that come from
+        # the lib-dynload are collected into _MEIPASS/lib-dynload instead of directly into _MEIPASS.
+        for idx, (dest, source, typecode) in enumerate(self.binaries):
+            if typecode != 'EXTENSION':
+                continue
+
+            # Convert to full filename and append suffix
+            dest, source, typecode = add_suffix_to_extension(dest, source, typecode)
+
+            # Divert into lib-dyload, if necessary (i.e., if file comes from lib-dynload directory) and its destination
+            # path does not already have a directory prefix.
+            src_parent = os.path.basename(os.path.dirname(source))
+            if src_parent == 'lib-dynload' and not os.path.dirname(os.path.normpath(dest)):
+                dest = os.path.join('lib-dynload', dest)
+
+            # Update
+            self.binaries[idx] = (dest, source, typecode)
 
         # Write warnings about missing modules.
         self._write_warnings()
@@ -766,16 +774,15 @@ class Analysis(Target):
         Verify presence of the Python dynamic library in the binary dependencies. Python library is an essential
         piece that has to be always included.
         """
-        # First check that libpython is in resolved binary dependencies.
-        for (nm, filename, typ) in binaries:
-            if typ == 'BINARY' and nm in PYDYLIB_NAMES:
+        # First check if libpython is already among the resolved binary dependencies.
+        for dest_name, src_name, typecode in binaries:
+            if typecode == 'BINARY' and dest_name in PYDYLIB_NAMES:
                 # Just print its filename and return.
-                logger.info('Using Python library %s', filename)
-                # Checking was successful - end of function.
+                logger.info('Using Python library %s', src_name)
                 return
 
         # Python lib not in dependencies - try to find it.
-        logger.info('Python library not in binary dependencies. Doing additional searching...')
+        logger.info('Python library not among binary dependencies. Performing additional search...')
         python_lib = bindepend.get_python_library_path()
         logger.debug('Adding Python library to binary dependencies')
         binaries.append((os.path.basename(python_lib), python_lib, 'BINARY'))
@@ -788,7 +795,9 @@ class Analysis(Target):
         '*python*' or are stored under 'lib-dynload' are always treated as exceptions and not excluded.
         """
 
-        self.binaries = [i for i in self.binaries if _should_include_system_binary(i, list_of_exceptions or [])]
+        self.binaries = [
+            entry for entry in self.binaries if _should_include_system_binary(entry, list_of_exceptions or [])
+        ]
 
 
 class ExecutableBuilder:

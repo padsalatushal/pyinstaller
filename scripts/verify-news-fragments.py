@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #-----------------------------------------------------------------------------
-# Copyright (c) 2013-2022, PyInstaller Development Team.
+# Copyright (c) 2013-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -14,7 +14,7 @@ Verify that new news entries have valid filenames. Usage:
 
 .. code-block:: bash
 
-    git diff --name-status $COMMIT_ID | python verify-news-fragments.py
+    ./scripts/verify-news-fragments.py
 
 """
 
@@ -28,7 +28,8 @@ CHANGELOG_GUIDE = (
 )
 
 CHANGE_TYPES = {
-    'bootloader', 'breaking', 'bugfix', 'build', 'core', 'doc', 'feature', 'hooks', 'moduleloader', 'process', 'tests'
+    'bootloader', 'breaking', 'bugfix', 'build', 'core', 'doc', 'feature', 'hooks', 'moduleloader', 'process', 'tests',
+    'deprecation'
 }
 
 NEWS_PATTERN = re.compile(r"(\d+)\.(\w+)\.(?:(\d+)\.)?rst")
@@ -59,19 +60,10 @@ def validate_name(name):
 
 
 def main():
-    # Parse the output of `git diff --name-status COMMIT`
-    lines = sys.stdin.readlines()
-
-    for line in lines:
-        try:
-            action, filename = line.split(maxsplit=1)
-        except ValueError:
+    for file in NEWS_DIR.iterdir():
+        if file.name in ["README.txt", "_template.rst", ".gitignore"]:
             continue
-        filename = Path(filename.strip())
-
-        if action == "A" and filename.parts[0] == "news":
-            if filename.suffix == ".rst":
-                validate_name(filename)
+        validate_name(file)
 
 
 if __name__ == "__main__":

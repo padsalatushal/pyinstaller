@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -145,8 +145,9 @@ class Wheel(bdist_wheel):
 # Map PyInstaller platform names to their setuptools counterparts. Other OSs can be added as and when we start shipping
 # wheels for them.
 PLATFORMS = {
-    "Windows-64bit": "win_amd64",
-    "Windows-32bit": "win32",
+    "Windows-64bit-intel": "win_amd64",
+    "Windows-32bit-intel": "win32",
+    "Windows-64bit-arm": "win_arm64",
     # The manylinux version tag depends on the glibc version compiled against. If we ever change the docker image used
     # to build the bootloaders, we must check/update this tag. These are the only architectures currently supported
     # by manylinux. Other platforms must use the generic bdist_wheel command, which will produce a wheel that is not
@@ -213,7 +214,8 @@ class bdist_macos(wheel_commands["wheel_darwin_64bit"]):
 wheel_commands["wheel_darwin_64bit"] = bdist_macos
 
 wheel_commands["wheel_darwin_64bit"].ICON_TYPES = ["icns"]
-wheel_commands["wheel_windows_32bit"].ICON_TYPES = wheel_commands["wheel_windows_64bit"].ICON_TYPES = ["ico"]
+for name in ["wheel_windows_64bit_intel", "wheel_windows_32bit_intel", "wheel_windows_64bit_arm"]:
+    wheel_commands[name].ICON_TYPES = ["ico"]
 
 
 class bdist_wheels(Command):
@@ -250,13 +252,36 @@ class bdist_wheels(Command):
 
 #--
 
+# --- Prevent `python setup.py install` from building and installing eggs ---
+
+if "bdist_egg" not in sys.argv:
+    from setuptools.command.bdist_egg import bdist_egg
+
+    class bdist_egg_disabled(bdist_egg):
+        """
+        Disabled version of bdist_egg, which prevents `setup.py install` from performing setuptools' default
+        easy_install, which is deprecated and should be avoided.
+        """
+        def run(self):
+            raise SystemExit(
+                "Error: Aborting implicit building of eggs. To install from source, use `pip install .` instead of "
+                "`python setup.py install`."
+            )
+
+    bdist_egg_override = {'bdist_egg': bdist_egg_disabled}
+else:
+    bdist_egg_override = {}
+
+#--
+
 setup(
-    setup_requires=["setuptools >= 39.2.0"],
+    setup_requires=["setuptools >= 42.0.0"],
     cmdclass={
         'build_bootloader': build_bootloader,
         'build': MyBuild,
         **wheel_commands,
         'bdist_wheels': bdist_wheels,
+        **bdist_egg_override,
     },
     packages=find_packages(include=["PyInstaller", "PyInstaller.*"]),
     package_data={

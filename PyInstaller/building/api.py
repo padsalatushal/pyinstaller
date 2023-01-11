@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -18,7 +18,6 @@ is a way how PyInstaller does the dependency analysis and creates executable.
 import os
 import subprocess
 import time
-import pprint
 import shutil
 from operator import itemgetter
 
@@ -27,14 +26,14 @@ from PyInstaller import log as logging
 from PyInstaller.archive.writers import CArchiveWriter, ZlibArchiveWriter
 from PyInstaller.building.datastruct import TOC, Target, _check_guts_eq
 from PyInstaller.building.utils import (
-    _check_guts_toc, _make_clean_directory, _rmtree, add_suffix_to_extension, checkCache, get_code_object,
-    strip_paths_in_code, compile_pymodule
+    _check_guts_toc, _make_clean_directory, _rmtree, checkCache, get_code_object, strip_paths_in_code, compile_pymodule
 )
-from PyInstaller.compat import (is_cygwin, is_darwin, is_linux, is_win)
+from PyInstaller.building.splash import Splash  # argument type validation in EXE
+from PyInstaller.compat import is_cygwin, is_darwin, is_linux, is_win, strict_collect_mode
 from PyInstaller.depend import bindepend
 from PyInstaller.depend.analysis import get_bootstrap_modules
 from PyInstaller.depend.utils import is_path_to_egg
-from PyInstaller.utils import misc
+import PyInstaller.utils.misc as miscutils
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +48,13 @@ class PYZ(Target):
     """
     Creates a ZlibArchive that contains all pure Python modules.
     """
-    typ = 'PYZ'
-
     def __init__(self, *tocs, **kwargs):
         """
         tocs
-                One or more TOCs (Tables of Contents), normally an Analysis.pure.
+            One or more TOCs (Tables of Contents), usually an `Analysis.pure` and an `Analysis.zipped_data`.
 
-                If this TOC has an attribute `_code_cache`, this is expected to be a dict of module code objects
-                from ModuleGraph.
+            If the passed TOC has an attribute `_code_cache`, it is expected to be a dictionary of module code objects
+            from ModuleGraph.
 
         kwargs
             Possible keyword arguments:
@@ -69,21 +66,19 @@ class PYZ(Target):
         """
 
         from PyInstaller.config import CONF
-        Target.__init__(self)
+
+        super().__init__()
+
         name = kwargs.get('name', None)
         cipher = kwargs.get('cipher', None)
-        self.toc = TOC()
-        # If available, use code objects directly from ModuleGraph to speed up PyInstaller.
-        self.code_dict = {}
-        for t in tocs:
-            self.toc.extend(t)
-            self.code_dict.update(getattr(t, '_code_cache', {}))
 
         self.name = name
         if name is None:
             self.name = os.path.splitext(self.tocfilename)[0] + '.pyz'
+
         # PyInstaller bootstrapping modules.
         bootstrap_dependencies = get_bootstrap_modules()
+
         # Bundle the crypto key.
         self.cipher = cipher
         if cipher:
@@ -105,38 +100,56 @@ class PYZ(Target):
                 # Include as is (extensions).
                 self.dependencies.append((name, src_path, typecode))
 
+        # Merge input TOC(s) and their code object dictionaries (if available). Skip the bootstrap modules, which will
+        # be passed on to CArchive.
+        bootstrap_module_names = set(name for name, _, typecode in self.dependencies if typecode == 'PYMODULE')
+        self.toc = TOC()
+        self.code_dict = {}
+        for toc in tocs:
+            self.code_dict.update(getattr(toc, '_code_cache', {}))
+            for entry in toc:
+                name, _, typecode = entry
+                # PYZ expects PYMODULE entries (python code objects) and DATA entries (data collected from zipped eggs).
+                assert typecode in ('PYMODULE', 'DATA'), f"Invalid entry passed to PYZ: {entry}!"
+                # Module required during bootstrap; skip to avoid collecting a duplicate.
+                if typecode == 'PYMODULE' and name in bootstrap_module_names:
+                    continue
+                self.toc.append(entry)
+
+        # Alphabetically sort the TOC to enable reproducible builds.
+        self.toc.sort()
+
         self.__postinit__()
 
-    _GUTS = (  # input parameters
+    _GUTS = (
+        # input parameters
         ('name', _check_guts_eq),
-        ('toc', _check_guts_toc),  # todo: pyc=1
+        ('toc', _check_guts_toc),
         # no calculated/analysed values
     )
 
-    def _check_guts(self, data, last_build):
-        if Target._check_guts(self, data, last_build):
-            return True
-        return False
-
     def assemble(self):
         logger.info("Building PYZ (ZlibArchive) %s", self.name)
-        # Do not bundle PyInstaller bootstrap modules into PYZ archive.
-        toc = self.toc - self.dependencies
-        for entry in toc[:]:
-            if not entry[0] in self.code_dict and entry[2] == 'PYMODULE':
-                # For some reason the code-object that modulegraph created is unavailable. Re-create it.
+
+        # Ensure code objects are available for all modules we are about to collect.
+        # NOTE: `self.toc` is already sorted by names.
+        archive_toc = []
+        for entry in self.toc:
+            name, src_path, typecode = entry
+            if typecode == 'PYMODULE' and name not in self.code_dict:
+                # The code object is not available from the ModuleGraph's cache; re-create it.
                 try:
-                    self.code_dict[entry[0]] = get_code_object(entry[0], entry[1])
+                    self.code_dict[name] = get_code_object(name, src_path)
                 except SyntaxError:
-                    # Exclude the module in case this is code meant for a newer Python version.
-                    toc.remove(entry)
-        # Sort content alphabetically to support reproducible builds.
-        toc.sort()
+                    # The module was likely written for different Python version; exclude it
+                    continue
+            archive_toc.append(entry)
 
         # Remove leading parts of paths in code objects.
-        self.code_dict = {key: strip_paths_in_code(code) for key, code in self.code_dict.items()}
+        self.code_dict = {name: strip_paths_in_code(code) for name, code in self.code_dict.items()}
 
-        ZlibArchiveWriter(self.name, toc, code_dict=self.code_dict, cipher=self.cipher)
+        # Create the archive
+        ZlibArchiveWriter(self.name, archive_toc, code_dict=self.code_dict, cipher=self.cipher)
         logger.info("Building PYZ (ZlibArchive) %s completed successfully.", self.name)
 
 
@@ -145,7 +158,6 @@ class PKG(Target):
     Creates a CArchive. CArchive is the data structure that is embedded into the executable. This data structure allows
     to include various read-only data in a single-file deployment.
     """
-    typ = 'PKG'
     xformdict = {
         'PYMODULE': 'm',
         'PYSOURCE': 's',
@@ -165,7 +177,7 @@ class PKG(Target):
         toc,
         name=None,
         cdict=None,
-        exclude_binaries=0,
+        exclude_binaries=False,
         strip_binaries=False,
         upx_binaries=False,
         upx_exclude=None,
@@ -175,21 +187,22 @@ class PKG(Target):
     ):
         """
         toc
-                A TOC (Table of Contents)
+            A TOC (Table of Contents)
         name
-                An optional filename for the PKG.
+            An optional filename for the PKG.
         cdict
-                Dictionary that specifies compression by typecode. For Example, PYZ is left uncompressed so that it
-                can be accessed inside the PKG. The default uses sensible values. If zlib is not available, no
-                compression is used.
+            Dictionary that specifies compression by typecode. For Example, PYZ is left uncompressed so that it
+            can be accessed inside the PKG. The default uses sensible values. If zlib is not available, no
+            compression is used.
         exclude_binaries
-                If True, EXTENSIONs and BINARYs will be left out of the PKG, and forwarded to its container (usually
-                a COLLECT).
+            If True, EXTENSIONs and BINARYs will be left out of the PKG, and forwarded to its container (usually
+            a COLLECT).
         strip_binaries
-                If True, use 'strip' command to reduce the size of binary files.
+            If True, use 'strip' command to reduce the size of binary files.
         upx_binaries
         """
-        Target.__init__(self)
+        super().__init__()
+
         self.toc = toc
         self.cdict = cdict
         self.name = name
@@ -202,6 +215,7 @@ class PKG(Target):
         self.target_arch = target_arch
         self.codesign_identity = codesign_identity
         self.entitlements_file = entitlements_file
+
         # This dict tells PyInstaller what items embedded in the executable should be compressed.
         if self.cdict is None:
             self.cdict = {
@@ -212,9 +226,10 @@ class PKG(Target):
                 'PYSOURCE': COMPRESSED,
                 'PYMODULE': COMPRESSED,
                 'SPLASH': COMPRESSED,
-                # Do not compress PYZ as a whole. Single modules are compressed when creating PYZ archive.
+                # Do not compress PYZ as a whole, as it contains individually-compressed modules.
                 'PYZ': UNCOMPRESSED
             }
+
         self.__postinit__()
 
     _GUTS = (  # input parameters
@@ -231,85 +246,72 @@ class PKG(Target):
         # no calculated/analysed values
     )
 
-    def _check_guts(self, data, last_build):
-        if Target._check_guts(self, data, last_build):
-            return True
-        return False
-
     def assemble(self):
         logger.info("Building PKG (CArchive) %s", os.path.basename(self.name))
-        trash = []
-        mytoc = []
-        srctoc = []
-        seen_inms = {}
-        seen_fnms = {}
-        seen_fnms_typ = {}
-        # 'inm'  - relative filename inside a CArchive
-        # 'fnm'  - absolute filename as it is on the file system.
-        for inm, fnm, typ in self.toc:
-            # Adjust name for extensions, if applicable
-            inm, fnm, typ = add_suffix_to_extension(inm, fnm, typ)
-            # Ensure filename 'fnm' is not None or empty string. Otherwise, it will fail when 'typ' is OPTION.
-            if fnm and not os.path.isfile(fnm) and is_path_to_egg(fnm):
-                # File is contained within python egg; it is added with the egg.
+
+        bootstrap_toc = []  # TOC containing bootstrap scripts and modules, which must not be sorted.
+        archive_toc = []  # TOC containing all other elements. Sorted to enable reproducible builds.
+
+        for dest_name, src_name, typecode in self.toc:
+            # Ensure that the source file exists, if necessary. Skip the check for OPTION entries, where 'src_name' is
+            # None. Also skip DEPENDENCY entries due to special contents of 'dest_name' and/or 'src_name'.
+            if typecode not in ('OPTION', 'DEPENDENCY') and not os.path.exists(src_name):
+                # If file is contained within python egg, it will be added with the egg.
+                if not is_path_to_egg(src_name):
+                    if strict_collect_mode:
+                        raise ValueError(f"Non-existent resource {src_name}, meant to be collected as {dest_name}!")
+                    else:
+                        logger.warning(
+                            "Ignoring non-existent resource %s, meant to be collected as %s", src_name, dest_name
+                        )
                 continue
-            if typ in ('BINARY', 'EXTENSION', 'DEPENDENCY'):
-                if self.exclude_binaries and typ == 'EXTENSION':
-                    self.dependencies.append((inm, fnm, typ))
-                elif not self.exclude_binaries or typ == 'DEPENDENCY':
-                    if typ == 'BINARY':
-                        # Avoid importing the same binary extension twice. This might happen if they come from different
-                        # sources (eg. once from binary dependence, and once from direct import).
-                        if inm in seen_inms:
-                            logger.warning('Two binaries added with the same internal name.')
-                            logger.warning(pprint.pformat((inm, fnm, typ)))
-                            logger.warning('was placed previously at')
-                            logger.warning(pprint.pformat((inm, seen_inms[inm], seen_fnms_typ[seen_inms[inm]])))
-                            logger.warning('Skipping %s.' % fnm)
-                            continue
-
-                        # Warn if the same binary extension was included with multiple internal names
-                        if fnm in seen_fnms:
-                            logger.warning('One binary added with two internal names.')
-                            logger.warning(pprint.pformat((inm, fnm, typ)))
-                            logger.warning('was placed previously at')
-                            logger.warning(pprint.pformat((seen_fnms[fnm], fnm, seen_fnms_typ[fnm])))
-                    seen_inms[inm] = fnm
-                    seen_fnms[fnm] = inm
-                    seen_fnms_typ[fnm] = typ
-
-                    fnm = checkCache(
-                        fnm,
+            if typecode in ('BINARY', 'EXTENSION'):
+                if self.exclude_binaries:
+                    # This is onedir-specific codepath - the EXE and consequently PKG should not be passed the Analysis'
+                    # `datas` and `binaries` TOCs (unless the user messes up the .spec file). However, EXTENSION entries
+                    # might still slip in via `PYZ.dependencies`, which are merged by EXE into its TOC and passed on to
+                    # PKG here. Such entries need to be passed to the parent container (the COLLECT) via
+                    # `PKG.dependencies`.
+                    #
+                    # This codepath formerly performed such pass-through only for EXTENSION entries, but in order to
+                    # keep code simple, we now also do it for BINARY entries. In a sane world, we do not expect to
+                    # encounter them here; but if they do happen to pass through here and we pass them on, the
+                    # container's TOC de-duplication should take care of them (same as with EXTENSION ones, really).
+                    self.dependencies.append((dest_name, src_name, typecode))
+                else:
+                    # This is onefile-specific codepath. The binaries (both EXTENSION and BINARY entries) need to be
+                    # processed using `checkCache` helper.
+                    src_name = checkCache(
+                        src_name,
                         strip=self.strip_binaries,
                         upx=self.upx_binaries,
                         upx_exclude=self.upx_exclude,
-                        dist_nm=inm,
+                        dist_nm=dest_name,
                         target_arch=self.target_arch,
                         codesign_identity=self.codesign_identity,
                         entitlements_file=self.entitlements_file,
-                        strict_arch_validation=(typ == 'EXTENSION'),
+                        strict_arch_validation=(typecode == 'EXTENSION'),
                     )
-
-                    mytoc.append((inm, fnm, self.cdict.get(typ, 0), self.xformdict.get(typ, 'b')))
-            elif typ == 'OPTION':
-                mytoc.append((inm, '', 0, 'o'))
-            elif typ in ('PYSOURCE', 'PYMODULE'):
-                # collect sourcefiles and module in a toc of it's own which will not be sorted.
-                srctoc.append((inm, fnm, self.cdict[typ], self.xformdict[typ]))
+                    archive_toc.append((dest_name, src_name, self.cdict.get(typecode, False), self.xformdict[typecode]))
+            elif typecode == 'OPTION':
+                archive_toc.append((dest_name, '', False, 'o'))
+            elif typecode in ('PYSOURCE', 'PYMODULE'):
+                # Collect python script and modules in a TOC that will not be sorted.
+                bootstrap_toc.append((dest_name, src_name, self.cdict.get(typecode, False), self.xformdict[typecode]))
             else:
-                mytoc.append((inm, fnm, self.cdict.get(typ, 0), self.xformdict.get(typ, 'b')))
+                # PYZ, PKG, DEPENDENCY, SPLASH
+                # TODO: are DATA and ZIPFILE valid here?
+                archive_toc.append((dest_name, src_name, self.cdict.get(typecode, False), self.xformdict[typecode]))
 
         # Bootloader has to know the name of Python library. Pass python libname to CArchive.
         pylib_name = os.path.basename(bindepend.get_python_library_path())
 
-        # Sort content alphabetically by type and name to support reproducible builds.
-        mytoc.sort(key=itemgetter(3, 0))
+        # Sort content alphabetically by type and name to enable reproducible builds.
+        archive_toc.sort(key=itemgetter(3, 0))
         # Do *not* sort modules and scripts, as their order is important.
         # TODO: Think about having all modules first and then all scripts.
-        CArchiveWriter(self.name, srctoc + mytoc, pylib_name=pylib_name)
+        CArchiveWriter(self.name, bootstrap_toc + archive_toc, pylib_name=pylib_name)
 
-        for item in trash:
-            os.remove(item)
         logger.info("Building PKG (CArchive) %s completed successfully.", os.path.basename(self.name))
 
 
@@ -317,12 +319,10 @@ class EXE(Target):
     """
     Creates the final executable of the frozen app. This bundles all necessary files together.
     """
-    typ = 'EXECUTABLE'
-
     def __init__(self, *args, **kwargs):
         """
         args
-                One or more arguments that are either TOCs Targets.
+            One or more arguments that are either instances of TOC or Target.
         kwargs
             Possible keyword arguments:
 
@@ -376,7 +376,8 @@ class EXE(Target):
                 (--entitlements option to codesign utility).
         """
         from PyInstaller.config import CONF
-        Target.__init__(self)
+
+        super().__init__()
 
         # Available options for EXE in .spec files.
         self.exclude_binaries = kwargs.get('exclude_binaries', False)
@@ -430,6 +431,20 @@ class EXE(Target):
         else:
             self.upx = False
 
+        # Catch and clear options that are unsupported on specific platforms.
+        if self.versrsrc and not is_win:
+            logger.warning('Ignoring version information; supported only on Windows!')
+            self.versrsrc = None
+        if self.manifest and not is_win:
+            logger.warning('Ignoring manifest; supported only on Windows!')
+            self.manifest = None
+        if self.resources and not is_win:
+            logger.warning('Ignoring resources; supported only on Windows!')
+            self.resources = []
+        if self.icon and not (is_win or is_darwin):
+            logger.warning('Ignoring icon; supported only on Windows and macOS!')
+            self.icon = None
+
         # Old .spec format included in 'name' the path where to put created app. New format includes only exename.
         #
         # Ignore fullpath in the 'name' and prepend DISTPATH or WORKPATH.
@@ -456,14 +471,40 @@ class EXE(Target):
 
         self.toc = TOC()
 
+        _deps_toc = TOC()  # See the note below
+
         for arg in args:
-            if isinstance(arg, TOC):
+            # Valid arguments: PYZ object, Splash object, and TOC-like iterables
+            if isinstance(arg, (PYZ, Splash)):
+                # Add object as an entry to the TOC, and merge its dependencies TOC
+                if isinstance(arg, PYZ):
+                    self.toc.append((os.path.basename(arg.name), arg.name, "PYZ"))
+                else:
+                    self.toc.append((os.path.basename(arg.name), arg.name, "SPLASH"))
+                # See the note below (and directly extend self.toc once this workaround is not necessary anymore).
+                # self.toc.extend(arg.dependencies)
+                for entry in arg.dependencies:
+                    _, _, typecode = entry
+                    if typecode in ('EXTENSION', 'BINARY', 'DATA'):
+                        _deps_toc.append(entry)
+                    else:
+                        self.toc.append(entry)
+            elif miscutils.is_iterable(arg):
+                # TOC-like iterable
                 self.toc.extend(arg)
-            elif isinstance(arg, Target):
-                self.toc.append((os.path.basename(arg.name), arg.name, arg.typ))
-                self.toc.extend(arg.dependencies)
             else:
-                self.toc.extend(arg)
+                raise TypeError(f"Invalid argument type for EXE: {type(arg)!r}")
+
+        # NOTE: this is an ugly work-around that ensures that when MERGE is used, the EXE's TOC is first populated with
+        # MERGE'd `binaries` and `datas` entries (which should be DEPENDENCY references for shared resources, and BINARY
+        # or DATA entries for non-shared resources), and that `PYZ.dependencies` is merged last. The latter may contain
+        # entries for `_struct` and `zlib` extensions, and if they end up in the TOC first, they will block the
+        # corresponding DEPENDENCY entries (if they are available) from being added to TOC. Which will in turn result in
+        # missing extensions with certain onefile/onedir referencing combinations. And even if not, the result would be
+        # but sub-optimal, as the extensions could be shared via DEPENDENCY mechanism. This work-around can be removed
+        # once we replace the TOC class with mechanism that implements a typecode-based priority system for the entries.
+        self.toc.extend(_deps_toc)
+        del _deps_toc
 
         if self.runtime_tmpdir is not None:
             self.toc.append(("pyi-runtime-tmpdir " + self.runtime_tmpdir, "", "OPTION"))
@@ -520,9 +561,17 @@ class EXE(Target):
                 self.toc.append((manifest_filename, filename, 'BINARY'))
 
             if self.versrsrc:
-                if not isinstance(self.versrsrc, versioninfo.VSVersionInfo) and not os.path.isabs(self.versrsrc):
-                    # relative version-info path is relative to spec file
-                    self.versrsrc = os.path.join(CONF['specpath'], self.versrsrc)
+                if isinstance(self.versrsrc, versioninfo.VSVersionInfo):
+                    # We were passed a valid versioninfo.VSVersionInfo structure
+                    pass
+                elif isinstance(self.versrsrc, (str, bytes, os.PathLike)):
+                    # File path; either absolute, or relative to the spec file
+                    if not os.path.isabs(self.versrsrc):
+                        self.versrsrc = os.path.join(CONF['specpath'], self.versrsrc)
+                    logger.debug("Loading version info from file: %r", self.versrsrc)
+                    self.versrsrc = versioninfo.load_version_info_from_text_file(self.versrsrc)
+                else:
+                    raise TypeError(f"Unsupported type for version info argument: {type(self.versrsrc)!r}")
 
         self.pkg = PKG(
             self.toc,
@@ -574,27 +623,22 @@ class EXE(Target):
     def _check_guts(self, data, last_build):
         if not os.path.exists(self.name):
             logger.info("Rebuilding %s because %s missing", self.tocbasename, os.path.basename(self.name))
-            return 1
+            return True
         if not self.append_pkg and not os.path.exists(self.pkgname):
             logger.info("Rebuilding because %s missing", os.path.basename(self.pkgname))
-            return 1
+            return True
 
         if Target._check_guts(self, data, last_build):
             return True
 
-        if (data['versrsrc'] or data['resources']) and not is_win:
-            # todo: really ignore :-)
-            logger.warning('ignoring version, manifest and resources, platform not capable')
-        if data['icon'] and not (is_win or is_darwin):
-            logger.warning('ignoring icon, platform not capable')
-
         mtm = data['mtm']
-        if mtm != misc.mtime(self.name):
+        if mtm != miscutils.mtime(self.name):
             logger.info("Rebuilding %s because mtimes don't match", self.tocbasename)
             return True
-        if mtm < misc.mtime(self.pkg.tocfilename):
+        if mtm < miscutils.mtime(self.pkg.tocfilename):
             logger.info("Rebuilding %s because pkg is more recent", self.tocbasename)
             return True
+
         return False
 
     def _bootloader_file(self, exe, extension=None):
@@ -651,7 +695,7 @@ class EXE(Target):
             # Embed version info.
             if self.versrsrc:
                 logger.info("Copying version information to EXE")
-                versioninfo.SetVersion(build_name, self.versrsrc)
+                versioninfo.write_version_info_to_executable(build_name, self.versrsrc)
             # Embed other resources.
             logger.info("Copying %d resources to EXE", len(self.resources))
             for res in self.resources:
@@ -817,7 +861,7 @@ class EXE(Target):
         # Ensure executable flag is set
         os.chmod(build_name, 0o755)
         # Get mtime for storing into the guts
-        self.mtm = misc.mtime(build_name)
+        self.mtm = miscutils.mtime(build_name)
         if build_name != self.name:
             os.rename(build_name, self.name)
         logger.info("Building EXE from %s completed successfully.", self.tocbasename)
@@ -832,219 +876,204 @@ class COLLECT(Target):
     """
     In one-dir mode creates the output folder with all necessary files.
     """
-    def __init__(self, *args, **kws):
+    def __init__(self, *args, **kwargs):
         """
         args
-                One or more arguments that are either TOCs Targets.
-        kws
+            One or more arguments that are either TOCs or Targets.
+        kwargs
             Possible keyword arguments:
 
-                name
-                    The name of the directory to be built.
+            name
+                The name of the directory to be built.
         """
         from PyInstaller.config import CONF
-        Target.__init__(self)
-        self.strip_binaries = kws.get('strip', False)
-        self.upx_exclude = kws.get("upx_exclude", [])
+
+        super().__init__()
+
+        self.strip_binaries = kwargs.get('strip', False)
+        self.upx_exclude = kwargs.get("upx_exclude", [])
         self.console = True
         self.target_arch = None
         self.codesign_identity = None
         self.entitlements_file = None
 
         if CONF['hasUPX']:
-            self.upx_binaries = kws.get('upx', False)
+            self.upx_binaries = kwargs.get('upx', False)
         else:
             self.upx_binaries = False
 
-        self.name = kws.get('name')
-        # Old .spec format included in 'name' the path where to collect files for the created app. app. New format
-        # includes only directory name.
-        #
-        # The 'name' directory is created in DISTPATH and necessary files are then collected to this directory.
-        self.name = os.path.join(CONF['distpath'], os.path.basename(self.name))
+        # The `name` should be the output directory name, without the parent path (the directory is created in the
+        # DISTPATH). Old .spec formats included parent path, so strip it away.
+        self.name = os.path.join(CONF['distpath'], os.path.basename(kwargs.get('name')))
 
         self.toc = TOC()
         for arg in args:
-            if isinstance(arg, TOC):
-                self.toc.extend(arg)
-            elif isinstance(arg, Target):
-                self.toc.append((os.path.basename(arg.name), arg.name, arg.typ))
-                if isinstance(arg, EXE):
-                    self.console = arg.console
-                    self.target_arch = arg.target_arch
-                    self.codesign_identity = arg.codesign_identity
-                    self.entitlements_file = arg.entitlements_file
-                    for tocnm, fnm, typ in arg.toc:
-                        if tocnm == os.path.basename(arg.name) + ".manifest":
-                            self.toc.append((tocnm, fnm, typ))
-                    if not arg.append_pkg:
-                        self.toc.append((os.path.basename(arg.pkgname), arg.pkgname, 'PKG'))
+            # Valid arguments: EXE object and TOC-like iterables
+            if isinstance(arg, EXE):
+                # Add EXE as an entry to the TOC, and merge its dependencies TOC
+                self.toc.append((os.path.basename(arg.name), arg.name, 'EXECUTABLE'))
                 self.toc.extend(arg.dependencies)
-            else:
+                # Inherit settings
+                self.console = arg.console
+                self.target_arch = arg.target_arch
+                self.codesign_identity = arg.codesign_identity
+                self.entitlements_file = arg.entitlements_file
+                # Search for the executable's external manifest, and collect it if available
+                for dest_name, src_name, typecode in arg.toc:
+                    if dest_name == os.path.basename(arg.name) + ".manifest":
+                        self.toc.append((dest_name, src_name, typecode))
+                # If PKG is not appended to the executable, we need to collect it.
+                if not arg.append_pkg:
+                    self.toc.append((os.path.basename(arg.pkgname), arg.pkgname, 'PKG'))
+            elif miscutils.is_iterable(arg):
+                # TOC-like iterable
                 self.toc.extend(arg)
+            else:
+                raise TypeError(f"Invalid argument type for COLLECT: {type(arg)!r}")
+
         self.__postinit__()
 
     _GUTS = (
-        # COLLECT always builds, just want the toc to be written out
+        # COLLECT always builds, we just want the TOC to be written out.
         ('toc', None),
     )
 
     def _check_guts(self, data, last_build):
-        # COLLECT always needs to be executed, since it will clean the output directory anyway to make sure there is no
-        # existing cruft accumulating
-        return 1
+        # COLLECT always needs to be executed, in order to clean the output directory.
+        return True
 
     def assemble(self):
         _make_clean_directory(self.name)
         logger.info("Building COLLECT %s", self.tocbasename)
-        for inm, fnm, typ in self.toc:
-            # Adjust name for extensions, if applicable
-            inm, fnm, typ = add_suffix_to_extension(inm, fnm, typ)
-            if not os.path.exists(fnm) or not os.path.isfile(fnm) and is_path_to_egg(fnm):
-                # File is contained within python egg; it is added with the egg.
+        for dest_name, src_name, typecode in self.toc:
+            # Ensure that the source file exists, if necessary. Skip the check for DEPENDENCY entries due to special
+            # contents of 'dest_name' and/or 'src_name'.
+            if typecode != 'DEPENDENCY' and not os.path.exists(src_name):
+                # If file is contained within python egg, it will be added with the egg.
+                if not is_path_to_egg(src_name):
+                    if strict_collect_mode:
+                        raise ValueError(f"Non-existent resource {src_name}, meant to be collected as {dest_name}!")
+                    else:
+                        logger.warning(
+                            "Ignoring non-existent resource %s, meant to be collected as %s", src_name, dest_name
+                        )
                 continue
-            if os.pardir in os.path.normpath(inm).split(os.sep) or os.path.isabs(inm):
-                raise SystemExit('Security-Alert: try to store file outside of dist-directory. Aborting. %r' % inm)
-            tofnm = os.path.join(self.name, inm)
-            todir = os.path.dirname(tofnm)
-            if not os.path.exists(todir):
-                os.makedirs(todir)
-            elif not os.path.isdir(todir):
+            # Disallow collection outside of the dist directory.
+            if os.pardir in os.path.normpath(dest_name).split(os.sep) or os.path.isabs(dest_name):
                 raise SystemExit(
-                    "Pyinstaller needs to make a directory at %r, but there already exists a file at that path!" % todir
+                    'Security-Alert: attempting to store file outside of the dist directory: %r. Aborting.' % dest_name
                 )
-            if typ in ('EXTENSION', 'BINARY'):
-                fnm = checkCache(
-                    fnm,
+            # Create parent directory structure, if necessary
+            dest_path = os.path.join(self.name, dest_name)  # Absolute destination path
+            dest_dir = os.path.dirname(dest_path)
+            if not os.path.exists(dest_dir):
+                os.makedirs(dest_dir)
+            elif not os.path.isdir(dest_dir):
+                raise SystemExit(
+                    f"Pyinstaller needs to create a directory at {dest_dir!r}, "
+                    "but there already exists a file at that path!"
+                )
+            if typecode in ('EXTENSION', 'BINARY'):
+                src_name = checkCache(
+                    src_name,
                     strip=self.strip_binaries,
                     upx=self.upx_binaries,
                     upx_exclude=self.upx_exclude,
-                    dist_nm=inm,
+                    dist_nm=dest_name,
                     target_arch=self.target_arch,
                     codesign_identity=self.codesign_identity,
                     entitlements_file=self.entitlements_file,
-                    strict_arch_validation=(typ == 'EXTENSION'),
+                    strict_arch_validation=(typecode == 'EXTENSION'),
                 )
-            if typ != 'DEPENDENCY':
-                if os.path.isdir(fnm):
-                    # Because shutil.copy2() is the default copy function for shutil.copytree, this will also copy file
-                    # metadata.
-                    shutil.copytree(fnm, tofnm)
-                else:
-                    shutil.copy(fnm, tofnm)
-                try:
-                    shutil.copystat(fnm, tofnm)
-                except OSError:
-                    logger.warning("failed to copy flags of %s", fnm)
-            if typ in ('EXTENSION', 'BINARY'):
-                os.chmod(tofnm, 0o755)
+            if typecode != 'DEPENDENCY':
+                # At this point, `src_name` should be a valid file.
+                if not os.path.isfile(src_name):
+                    raise ValueError(f"Resource {src_name!r} is not a valid file!")
+                # If strict collection mode is enabled, the destination should not exist yet.
+                if strict_collect_mode and os.path.exists(dest_path):
+                    raise ValueError(
+                        f"Attempting to collect a duplicated file into COLLECT: {dest_name} (type: {typecode})"
+                    )
+                shutil.copy2(src_name, dest_path)  # Use copy2 to (attempt to) preserve metadata
+            if typecode in ('EXTENSION', 'BINARY'):
+                os.chmod(dest_path, 0o755)
         logger.info("Building COLLECT %s completed successfully.", self.tocbasename)
 
 
 class MERGE:
     """
-    Merge repeated dependencies from other executables into the first executable. Data and binary files are then
-    present only once and some disk space is thus reduced.
+    Given Analysis objects for multiple executables, replace occurrences of data and binary files with references to the
+    first executable in which they occur. The actual data and binary files are then collected only once, thereby
+    reducing the disk space used by multiple executables. Every executable (even onedir ones!) obtained from a
+    MERGE-processed Analysis gains onefile semantics, because it needs to extract its referenced dependencies from other
+    executables into temporary directory before they can run.
     """
     def __init__(self, *args):
         """
-        Repeated dependencies are then present only once in the first executable in the 'args' list. Other
-        executables depend on the first one. Other executables have to extract necessary files from the first
-        executable.
-
-        args  dependencies in a list of (Analysis, id, filename) tuples.
-              Replace id with the correct filename.
+        args
+            Dependencies as a list of (analysis, identifier, path_to_exe) tuples. `analysis` is an instance of
+            `Analysis`, `identifier` is the basename of the entry-point script (without .py suffix), and `path_to_exe`
+            is path to the corresponding executable, relative to the `dist` directory (without .exe suffix in the
+            filename component). For onefile executables, `path_to_exe` is usually just executable's base name
+            (e.g., `myexecutable`). For onedir executables, `path_to_exe` usually comprises both the application's
+            directory name and executable name (e.g., `myapp/myexecutable`).
         """
-        # The first Analysis object with all dependencies.
-        # Any item from the first executable cannot be removed.
-        self._main = None
-
         self._dependencies = {}
 
-        self._id_to_path = {}
-        for _, i, p in args:
-            self._id_to_path[os.path.normcase(i)] = p
+        # Process all given (analysis, identifier, path_to_exe) tuples
+        for analysis, identifier, path_to_exe in args:
+            # Process analysis.binaries and analysis.datas TOCs. self._process_toc() call returns two TOCs; the first
+            # contains entries that remain within this analysis, while the second contains entries that reference
+            # an entry in another executable.
+            binaries, binaries_refs = self._process_toc(analysis.binaries, path_to_exe)
+            datas, datas_refs = self._process_toc(analysis.datas, path_to_exe)
+            # Update `analysis.binaries`, `analysis.datas`, and `analysis.dependencies`.
+            # The entries that are found in preceding executable(s) are removed from `binaries` and `datas`, and their
+            # DEPENDENCY entry counterparts are added to `dependencies`. We cannot simply update the entries in
+            # `binaries` and `datas`, because at least in theory, we need to support both onefile and onedir mode. And
+            # while in onefile, `a.datas`, `a.binaries`, and `a.dependencies` are passed to `EXE` (and its `PKG`), with
+            # onedir, `a.datas` and `a.binaries` need to be passed to `COLLECT` (as they were before the MERGE), while
+            # `a.dependencies` needs to be passed to `EXE`. This split requires DEPENDENCY entries to be in a separate
+            # TOC.
+            analysis.binaries = TOC(binaries)
+            analysis.datas = TOC(datas)
+            analysis.dependencies += binaries_refs + datas_refs
 
-        # Get the longest common path
-        common_prefix = os.path.commonprefix([os.path.normcase(os.path.abspath(a.scripts[-1][1])) for a, _, _ in args])
-        self._common_prefix = os.path.dirname(common_prefix)
-        if self._common_prefix[-1] != os.sep:
-            self._common_prefix += os.sep
-        logger.info("Common prefix: %s", self._common_prefix)
+    def _process_toc(self, toc, path_to_exe):
+        # NOTE: unfortunately, these need to keep two separate lists. See the comment in the calling code on why this
+        # is so.
+        toc_keep = []
+        toc_refs = []
+        for entry in toc:
+            dest_name, src_name, typecode = entry
+            if src_name not in self._dependencies:
+                logger.debug("Adding dependency %s located in %s", src_name, path_to_exe)
+                self._dependencies[src_name] = path_to_exe
+                # Add entry to list of kept TOC entries
+                toc_keep.append(entry)
+            else:
+                # Construct relative dependency path; i.e., the relative path from this executable (or rather, its
+                # parent directory) to the executable that contains the dependency.
+                dep_path = os.path.relpath(self._dependencies[src_name], os.path.dirname(path_to_exe))
+                # Ignore references that point to the origin package. This can happen if the same resource is listed
+                # multiple times in TOCs (e.g., once as binary and once as data).
+                if dep_path.endswith(path_to_exe):
+                    logger.debug(
+                        "Ignoring self-reference of %s for %s, located in %s - duplicated TOC entry?", src_name,
+                        path_to_exe, dep_path
+                    )
+                    # The entry is a duplicate, and should be ignored (i.e., do not add it to either of output TOCs).
+                    continue
+                logger.debug("Referencing %s to be a dependency for %s, located in %s", src_name, path_to_exe, dep_path)
+                # Create new DEPENDENCY entry; under destination path (first element), we store the original destination
+                # path, while source path contains the relative reference path.
+                toc_refs.append((dest_name, dep_path, "DEPENDENCY"))
 
-        self._merge_dependencies(args)
-
-    def _merge_dependencies(self, args):
-        """
-        Filter shared dependencies to be only in first executable.
-        """
-        for analysis, _, _ in args:
-            path = os.path.normcase(os.path.abspath(analysis.scripts[-1][1]))
-            path = path.replace(self._common_prefix, "", 1)
-            path = os.path.splitext(path)[0]
-            if os.path.normcase(path) in self._id_to_path:
-                path = self._id_to_path[os.path.normcase(path)]
-            self._set_dependencies(analysis, path)
-
-    def _set_dependencies(self, analysis, path):
-        """
-        Synchronize the Analysis result with the needed dependencies.
-        """
-        for toc in (analysis.binaries, analysis.datas):
-            for i, tpl in enumerate(toc):
-                if not tpl[1] in self._dependencies:
-                    logger.debug("Adding dependency %s located in %s", tpl[1], path)
-                    self._dependencies[tpl[1]] = path
-                else:
-                    dep_path = self._get_relative_path(path, self._dependencies[tpl[1]])
-                    # Ignore references that point to the origin package. This can happen if the same resource is listed
-                    # multiple times in TOCs (e.g., once as binary and once as data).
-                    if dep_path.endswith(path):
-                        logger.debug(
-                            "Ignoring self-reference of %s for %s, located in %s - duplicated TOC entry?", tpl[1], path,
-                            dep_path
-                        )
-                        # Clear the entry as it is a duplicate.
-                        toc[i] = (None, None, None)
-                        continue
-                    logger.debug("Referencing %s to be a dependency for %s, located in %s", tpl[1], path, dep_path)
-                    # Determine the path relative to dep_path (i.e, within the target directory) from the 'name'
-                    # component of the TOC tuple. If entry is EXTENSION, then the relative path needs to be
-                    # reconstructed from the name components.
-                    if tpl[2] == 'EXTENSION':
-                        # Split on os.path.sep first, to handle additional path prefix (e.g., lib-dynload)
-                        ext_components = tpl[0].split(os.path.sep)
-                        ext_components = ext_components[:-1] + ext_components[-1].split('.')[:-1]
-                        if ext_components:
-                            rel_path = os.path.join(*ext_components)
-                        else:
-                            rel_path = ''
-                    else:
-                        rel_path = os.path.dirname(tpl[0])
-                    # Take filename from 'path' (second component of TOC tuple); this way, we don't need to worry about
-                    # suffix of extensions.
-                    filename = os.path.basename(tpl[1])
-                    # Construct the full file path relative to dep_path...
-                    filename = os.path.join(rel_path, filename)
-                    # ...and use it in new DEPENDENCY entry
-                    analysis.dependencies.append((":".join((dep_path, filename)), tpl[1], "DEPENDENCY"))
-                    toc[i] = (None, None, None)
-            # Clean the list
-            toc[:] = [tpl for tpl in toc if tpl != (None, None, None)]
-
-    # TODO: use pathlib.Path.relative_to() instead.
-    def _get_relative_path(self, startpath, topath):
-        start = startpath.split(os.sep)[:-1]
-        start = ['..'] * len(start)
-        if start:
-            start.append(topath)
-            return os.sep.join(start)
-        else:
-            return topath
+        return toc_keep, toc_refs
 
 
-UNCOMPRESSED = 0
-COMPRESSED = 1
+UNCOMPRESSED = False
+COMPRESSED = True
 
 _MISSING_BOOTLOADER_ERRORMSG = """Fatal error: PyInstaller does not include a pre-compiled bootloader for your
 platform. For more details and instructions how to build the bootloader see

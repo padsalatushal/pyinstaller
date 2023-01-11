@@ -60,6 +60,7 @@ Only the following command-line options have an effect when building from a spec
 * :option:`--noconfirm`
 * :option:`--ascii`
 * :option:`--clean`
+* :option:`--log-level`
 
 .. _spec-file operations:
 
@@ -373,8 +374,7 @@ Spec File Options for a macOS Bundle
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When you build a windowed macOS app
-(that is, running in macOS, you specify the :option:`--onefile`
-:option:`--windowed` options),
+(that is, running under macOS, you specify the :option:`--windowed` option),
 the spec file contains an additional statement to
 create the macOS application bundle, or app folder::
 
@@ -540,6 +540,16 @@ of code and libraries.
 You can use the multipackage feature to bundle a set of executable apps
 so that they share single copies of libraries.
 You can do this with either one-file or one-folder apps.
+
+Multipackaging with One-Folder Apps
+-----------------------------------
+
+For combining multiple one-folder applications, use a `shared COLLECT statement`_.
+This will collect the external resources for all of the one-folder apps into one directory.
+
+Multipackaging with One-File Apps
+---------------------------------
+
 Each dependency (a DLL, for example) is packaged only once, in one of the apps.
 Any other apps in the set that depend on that DLL
 have an "external reference" to it, telling them
@@ -551,9 +561,7 @@ All but one of the apps in the set will have slightly slower launch times.
 
 The external references between binaries include hard-coded
 paths to the output directory, and cannot be rearranged.
-If you use one-folder mode, you must
-install all the application folders within a single parent directory.
-If you use one-file mode, you must place all
+You must place all
 the related applications in the same directory
 when you install the application.
 
@@ -574,7 +582,7 @@ A custom spec file for a multipackage bundle contains one call to the MERGE func
 
       MERGE(*args)
 
-MERGE is used after the analysis phase and before ``EXE`` and ``COLLECT``.
+MERGE is used after the analysis phase and before ``EXE``.
 Its variable-length list of arguments consists of
 a list of tuples, each tuple having three elements:
 
@@ -633,27 +641,24 @@ so that the latter two refer to the first for common dependencies.
 Following this you can copy the ``PYZ``, ``EXE`` and ``COLLECT`` statements from
 the original three spec files,
 substituting the unique names of the Analysis objects
-where the original spec files have ``a.``, for example::
+where the original spec files have ``a.``
+Modify the EXE statements to pass in ``Analysis.dependencies``, in addition
+to all other arguments that are passed in the original EXE statements.
+For example::
 
     foo_pyz = PYZ(foo_a.pure)
-    foo_exe = EXE(foo_pyz, foo_a.scripts, ... etc.
-    foo_coll = COLLECT( foo_exe, foo_a.binaries, foo_a.datas... etc.
+    foo_exe = EXE(foo_pyz, foo_a.dependencies, foo_a.scripts, ... etc.
 
     bar_pyz = PYZ(bar_a.pure)
-    bar_exe = EXE(bar_pyz, bar_a.scripts, ... etc.
-    bar_coll = COLLECT( bar_exe, bar_a.binaries, bar_a.datas... etc.
+    bar_exe = EXE(bar_pyz, bar_a.dependencies, bar_a.scripts, ... etc.
 
-(If you are building one-file apps, there is no ``COLLECT`` step.)
 Save the combined spec file as ``foobarzap.spec`` and then build it::
 
-    pyi-build foobarzap.spec
+    pyinstaller foobarzap.spec
 
 The output in the :file:`dist` folder will be all three apps, but
-the apps :file:`dist/bar/bar` and :file:`dist/zap/zap` will refer to
-the contents of :file:`dist/foo/` for shared dependencies.
-
-There are several multipackage examples in the
-PyInstaller distribution folder under :file:`tests/functional/specs`.
+the apps :file:`dist/bar` and :file:`dist/zap` will refer to
+the contents of :file:`dist/foo` for shared dependencies.
 
 Remember that a spec file is executable Python.
 You can use all the Python facilities (``for`` and ``with``

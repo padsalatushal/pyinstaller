@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -74,7 +74,8 @@ def test_versioninfo_str(tmp_path):
     # "Serialize" to string. This is what grab_version.py utility does to write VsVersionInfo to output text file.
     vs_info_str = str(vsinfo)
 
-    # "Deserialize" via eval. This is what versioninfo.SetVersion() does to read VsVersionInfo from text file.
+    # "Deserialize" via eval. This is what `versioninfo.load_version_info_from_text_file` does to read `VsVersionInfo`
+    # from text file.
     vsinfo2 = eval(vs_info_str)
 
     assert vsinfo == vsinfo2
@@ -126,7 +127,7 @@ def test_versioninfo_written_to_exe(tmp_path):
     shutil.copyfile(bootloader_file, test_file)
 
     # Embed version info
-    versioninfo.SetVersion(test_file, vsinfo)
+    versioninfo.write_version_info_to_executable(test_file, vsinfo)
 
     # Read back the values from the string table.
     def read_file_version_info(filename, *attributes):

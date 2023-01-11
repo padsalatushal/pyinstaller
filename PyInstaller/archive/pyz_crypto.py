@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -11,7 +11,10 @@
 
 import os
 
+from PyInstaller import log as logging
+
 BLOCK_SIZE = 16
+logger = logging.getLogger(__name__)
 
 
 class PyiBlockCipher:
@@ -19,6 +22,12 @@ class PyiBlockCipher:
     This class is used only to encrypt Python modules.
     """
     def __init__(self, key=None):
+        logger.log(
+            logging.DEPRECATION,
+            "Bytecode encryption will be removed in PyInstaller v6. Please remove cipher and block_cipher parameters "
+            "from your spec file to avoid breakages on upgrade. For the rationale/alternatives see "
+            "https://github.com/pyinstaller/pyinstaller/pull/6999"
+        )
         assert type(key) is str
         if len(key) > BLOCK_SIZE:
             self.key = key[0:BLOCK_SIZE]

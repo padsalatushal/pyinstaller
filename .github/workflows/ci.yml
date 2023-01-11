@@ -16,6 +16,11 @@ on:
 env:
   # Colored pytest output on CI despite not having a tty
   FORCE_COLOR: 1
+  # Enable strict unpack mode to catch file duplication problems in onefile builds (at executable run-time).
+  PYINSTALLER_STRICT_UNPACK_MODE: 1
+  # Enable strict cpllect mode to catch file duplication problems in PKG/Carchive (onefile builds) or COLLECT
+  # (onedir builds) at build time.
+  PYINSTALLER_STRICT_COLLECT_MODE: 1
 
 permissions:
   contents: read # to fetch code (actions/checkout)
@@ -25,8 +30,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: [3.7, 3.8, 3.9, '3.10', '3.11-dev']
-        os: ['windows-latest', 'ubuntu-latest', 'macos-11']
+        python-version: [3.7, 3.8, 3.9, '3.10', '3.11']
+        os: ['windows-latest', 'ubuntu-20.04', 'macos-11']
       fail-fast: false
     steps:
       - uses: actions/checkout@v3
@@ -48,7 +53,7 @@ jobs:
             libxcb-shape0-dev libxcb-xkb-dev xvfb \
             libopengl0 libegl1 \
             libpulse0 libpulse-mainloop-glib0 \
-            libgstreamer-plugins-base1.0-0 libgstreamer-gl1.0-0 \
+            gstreamer1.0-plugins-base libgstreamer-gl1.0-0 \
             gir1.2-gtk-3.0 libgirepository1.0-dev
 
       - name: Download AppImage tool
@@ -76,7 +81,17 @@ jobs:
           # Compile bootloader
           cd bootloader
           CC="gcc -std=gnu90" python waf all
-          cd ..
+
+      - name: Check if bootloader is buildable with --static-zlib option
+        if: startsWith(matrix.os, 'ubuntu')
+        run: cd bootloader && python waf --static-zlib all
+
+      - name: Check if bootloader is buildable for Windows ARM
+        if: startsWith(matrix.os, 'windows')
+        run: |
+            cd bootloader
+            python waf --target-arch=64bit-arm all
+            ls ../PyInstaller/bootloader/Windows-64bit-arm
 
       - name: Install PyInstaller
         run: |

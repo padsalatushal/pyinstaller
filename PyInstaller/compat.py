@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -26,6 +26,9 @@ import shutil
 
 from PyInstaller._shared_with_waf import _pyi_machine
 from PyInstaller.exceptions import ExecCommandFailed
+
+# Strict collect mode, which raises error when trying to collect duplicate files into PKG/CArchive or COLLECT.
+strict_collect_mode = os.environ.get("PYINSTALLER_STRICT_COLLECT_MODE", "0") != "0"
 
 # Copied from https://docs.python.org/3/library/platform.html#cross-platform.
 is_64bits: bool = sys.maxsize > 2**32
@@ -750,15 +753,15 @@ def check_requirements():
 
     for name in ["enum34", "typing"]:
         try:
-            distribution(name)
+            dist = distribution(name)
         except PackageNotFoundError:
-            pass
-        else:
-            raise SystemExit(
-                f"The '{name}' package is an obsolete backport of a standard library package and is "
-                f"incompatible with PyInstaller. Please "
-                f"`{'conda remove' if is_conda else 'pip uninstall'} {name}` then try again."
-            )
+            continue
+        remove = "conda remove" if is_conda else f'"{sys.executable}" -m pip uninstall {name}'
+        raise SystemExit(
+            f"The '{name}' package is an obsolete backport of a standard library package and is incompatible with "
+            f"PyInstaller. Please remove this package (located in {dist.locate_file('')}) using\n    {remove}\n"
+            "then try again."
+        )
 
     # Bail out if binutils is not installed.
     if is_linux and shutil.which("objdump") is None:

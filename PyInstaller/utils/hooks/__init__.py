@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -106,48 +106,6 @@ def exec_statement_rc(statement: str):
     return __exec_statement(statement, capture_stdout=False)
 
 
-def __exec_script(script_filename, *args, env=None, capture_stdout=True):
-    """
-    Executes a Python script in an externally spawned interpreter. If capture_stdout is set to True, returns anything
-    that was emitted in the standard output as a single string. Otherwise, returns the exit code.
-
-    To prevent misuse, the script passed to utils.hooks.exec_script must be located in the
-    `PyInstaller/utils/hooks/subproc` directory.
-    """
-    script_filename = os.path.basename(script_filename)
-    script_filename = os.path.join(os.path.dirname(__file__), 'subproc', script_filename)
-    if not os.path.exists(script_filename):
-        raise SystemError(
-            "To prevent misuse, the script passed to PyInstaller.utils.hooks.exec_script must be located in the "
-            "`PyInstaller/utils/hooks/subproc` directory."
-        )
-
-    cmd = [script_filename]
-    cmd.extend(args)
-    return __exec_python_cmd(cmd, env=env, capture_stdout=capture_stdout)
-
-
-def exec_script(script_filename: str | os.PathLike, *args: str, env: dict | None = None):
-    """
-    Executes a Python script in an externally spawned interpreter, and returns anything that was emitted to the standard
-    output as a single string.
-
-    To prevent misuse, the script passed to utils.hooks.exec_script must be located in the
-    `PyInstaller/utils/hooks/subproc` directory.
-    """
-    return __exec_script(script_filename, *args, env=env, capture_stdout=True)
-
-
-def exec_script_rc(script_filename: str | os.PathLike, *args: str, env: dict | None = None):
-    """
-    Executes a Python script in an externally spawned interpreter, and returns the exit code.
-
-    To prevent misuse, the script passed to utils.hooks.exec_script must be located in the
-    `PyInstaller/utils/hooks/subproc` directory.
-    """
-    return __exec_script(script_filename, *args, env=env, capture_stdout=False)
-
-
 def eval_statement(statement: str):
     """
     Execute a single Python statement in an externally-spawned interpreter, and :func:`eval` its output (if any).
@@ -167,14 +125,6 @@ def eval_statement(statement: str):
 
     """
     txt = exec_statement(statement).strip()
-    if not txt:
-        # Return an empty string, which is "not true" but is iterable.
-        return ''
-    return eval(txt)
-
-
-def eval_script(script_filename: str | os.PathLike, *args: str, env: dict | None = None):
-    txt = exec_script(script_filename, *args, env=env).strip()
     if not txt:
         # Return an empty string, which is "not true" but is iterable.
         return ''
@@ -757,12 +707,13 @@ PY_DYLIB_PATTERNS = [
 ]
 
 
-def collect_dynamic_libs(package: str, destdir: str | None = None):
+def collect_dynamic_libs(package: str, destdir: str | None = None, search_patterns: [str] = PY_DYLIB_PATTERNS):
     """
     This function produces a list of (source, dest) of dynamic library files that reside in package. Its output can be
     directly assigned to ``binaries`` in a hook script. The package parameter must be a string which names the package.
 
     :param destdir: Relative path to ./dist/APPNAME where the libraries should be put.
+    :param search_patterns: List of dynamic library filename patterns to collect.
     """
     logger.debug('Collecting dynamic libraries for %s' % package)
 
@@ -782,7 +733,7 @@ def collect_dynamic_libs(package: str, destdir: str | None = None):
     for pkg_dir in pkg_dirs:
         pkg_base = package_base_path(pkg_dir, package)
         # Recursively glob for all file patterns in the package directory
-        for pattern in PY_DYLIB_PATTERNS:
+        for pattern in search_patterns:
             files = Path(pkg_dir).rglob(pattern)
             for source in files:
                 # Produce the tuple ('/abs/path/to/source/mod/submod/file.pyd', 'mod/submod')

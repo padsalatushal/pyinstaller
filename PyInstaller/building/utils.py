@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -47,72 +47,64 @@ logger = logging.getLogger(__name__)
 # creating final executable.
 
 
-def _check_guts_eq(attr, old, new, _last_build):
+def _check_guts_eq(attr_name, old_value, new_value, last_build):
     """
     Rebuild is required if values differ.
     """
-    if old != new:
-        logger.info("Building because %s changed", attr)
+    if old_value != new_value:
+        logger.info("Building because %s changed", attr_name)
         return True
     return False
 
 
-def _check_guts_toc_mtime(_attr, old, _toc, last_build, pyc=0):
+def _check_guts_toc_mtime(attr_name, old_toc, new_toc, last_build):
     """
-    Rebuild is required if mtimes of files listed in old toc are newer than last_build.
-
-    If pyc=1, check for .py files as well.
+    Rebuild is required if mtimes of files listed in old TOC are newer than last_build.
 
     Use this for calculated/analysed values read from cache.
     """
-    for nm, fnm, typ in old:
-        if misc.mtime(fnm) > last_build:
-            logger.info("Building because %s changed", fnm)
-            return True
-        elif pyc and misc.mtime(fnm[:-1]) > last_build:
-            logger.info("Building because %s changed", fnm[:-1])
+    for dest_name, src_name, typecode in old_toc:
+        if misc.mtime(src_name) > last_build:
+            logger.info("Building because %s changed", src_name)
             return True
     return False
 
 
-def _check_guts_toc(attr, old, toc, last_build, pyc=0):
+def _check_guts_toc(attr_name, old_toc, new_toc, last_build):
     """
-    Rebuild is required if either toc content changed or mtimes of files listed in old toc are newer than last_build.
-
-    If pyc=1, check for .py files as well.
+    Rebuild is required if either TOC content changed or mtimes of files listed in old TOC are newer than last_build.
 
     Use this for input parameters.
     """
-    return _check_guts_eq(attr, old, toc, last_build) or _check_guts_toc_mtime(attr, old, toc, last_build, pyc=pyc)
+    return _check_guts_eq(attr_name, old_toc, new_toc, last_build) or \
+        _check_guts_toc_mtime(attr_name, old_toc, new_toc, last_build)
 
 
-def add_suffix_to_extension(inm, fnm, typ):
+def add_suffix_to_extension(dest_name, src_name, typecode):
     """
-    Take a TOC entry (inm, fnm, typ) and adjust the inm for EXTENSION or DEPENDENCY to include the full library suffix.
+    Take a TOC entry (dest_name, src_name, typecode) and adjust the dest_name for EXTENSION to include the full library
+    suffix.
     """
-    if typ == 'EXTENSION':
-        if fnm.endswith(inm):
-            # If inm completely fits into end of the fnm, it has already been processed.
-            return inm, fnm, typ
-        # Change the dotted name into a relative path. This places C extensions in the Python-standard location.
-        inm = inm.replace('.', os.sep)
-        # In some rare cases extension might already contain a suffix. Skip it in this case.
-        if os.path.splitext(inm)[1] not in EXTENSION_SUFFIXES:
-            # Determine the base name of the file.
-            base_name = os.path.basename(inm)
-            assert '.' not in base_name
-            # Use this file's existing extension. For extensions such as ``libzmq.cp36-win_amd64.pyd``, we cannot use
-            # ``os.path.splitext``, which would give only the ```.pyd`` part of the extension.
-            inm = inm + os.path.basename(fnm)[len(base_name):]
+    # No-op for non-extension
+    if typecode != 'EXTENSION':
+        return dest_name, src_name, typecode
 
-    elif typ == 'DEPENDENCY':
-        # Use the suffix from the filename.
-        # TODO: verify what extensions are by DEPENDENCIES.
-        binext = os.path.splitext(fnm)[1]
-        if not os.path.splitext(inm)[1] == binext:
-            inm = inm + binext
+    # If dest_name completely fits into end of the src_name, it has already been processed.
+    if src_name.endswith(dest_name):
+        return dest_name, src_name, typecode
 
-    return inm, fnm, typ
+    # Change the dotted name into a relative path. This places C extensions in the Python-standard location.
+    dest_name = dest_name.replace('.', os.sep)
+    # In some rare cases extension might already contain a suffix. Skip it in this case.
+    if os.path.splitext(dest_name)[1] not in EXTENSION_SUFFIXES:
+        # Determine the base name of the file.
+        base_name = os.path.basename(dest_name)
+        assert '.' not in base_name
+        # Use this file's existing extension. For extensions such as ``libzmq.cp36-win_amd64.pyd``, we cannot use
+        # ``os.path.splitext``, which would give only the ```.pyd`` part of the extension.
+        dest_name = dest_name + os.path.basename(src_name)[len(base_name):]
+
+    return dest_name, src_name, typecode
 
 
 def applyRedirects(manifest, redirects):
@@ -159,11 +151,6 @@ def checkCache(
     # Caching on Mac OS does not work since we need to modify binary headers to use relative paths to dll dependencies
     # and starting with '@loader_path'.
     if not strip and not upx and not is_darwin and not is_win:
-        return fnm
-
-    if dist_nm is not None and ":" in dist_nm:
-        # A file embedded in another PyInstaller build via multipackage.
-        # No actual file exists to process.
         return fnm
 
     if strip:

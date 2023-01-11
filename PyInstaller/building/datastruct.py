@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -31,7 +31,7 @@ def unique_name(entry):
     unique_name: str
     """
     name, path, typecode = entry
-    if typecode in ('BINARY', 'DATA'):
+    if typecode in ('BINARY', 'DATA', 'EXTENSION', 'DEPENDENCY'):
         name = os.path.normcase(name)
 
     return name

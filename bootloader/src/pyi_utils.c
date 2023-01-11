@@ -1,6 +1,6 @@
 /*
  * ****************************************************************************
- * Copyright (c) 2013-2022, PyInstaller Development Team.
+ * Copyright (c) 2013-2023, PyInstaller Development Team.
  *
  * Distributed under the terms of the GNU General Public License (version 2
  * or later) with exception for distributing the bootloader.
@@ -582,6 +582,23 @@ pyi_remove_temp_path(const char *dir)
 }
 #endif /* ifdef _WIN32 */
 
+
+static int
+_check_strict_unpack_mode ()
+{
+    static int enabled = -1;
+    if (enabled == -1) {
+        char *env_strict = pyi_getenv("PYINSTALLER_STRICT_UNPACK_MODE"); /* strdup'd copy or NULL */
+        if (strcmp(env_strict, "0") == 0) {
+            enabled = 0;
+        } else {
+            enabled = 1;
+        }
+        free(env_strict);
+    }
+    return enabled;
+}
+
 /*
  * helper for extract2fs
  * which may try multiple places
@@ -642,12 +659,22 @@ pyi_open_target(const char *path, const char* name_)
     pyi_win32_utils_from_utf8(wchar_buffer, fnm, PATH_MAX);
 
     if (_wstat(wchar_buffer, &sbuf) == 0) {
-        OTHERERROR("WARNING: file already exists but should not: %s\n", fnm);
+        if (_check_strict_unpack_mode()) {
+            OTHERERROR("ERROR: file already exists but should not: %s\n", fnm);
+            return NULL;
+        } else {
+            OTHERERROR("WARNING: file already exists but should not: %s\n", fnm);
+        }
     }
 #else
 
     if (stat(fnm, &sbuf) == 0) {
-        OTHERERROR("WARNING: file already exists but should not: %s\n", fnm);
+        if (_check_strict_unpack_mode()) {
+            OTHERERROR("ERROR: file already exists but should not: %s\n", fnm);
+            return NULL;
+        } else {
+            OTHERERROR("WARNING: file already exists but should not: %s\n", fnm);
+        }
     }
 #endif
     /*
@@ -810,6 +837,24 @@ _pyi_win32_console_ctrl(DWORD dwCtrlType)
     return TRUE;
 }
 
+static HANDLE
+_pyi_get_stream_handle(FILE *stream)
+{
+    HANDLE handle = (void *)_get_osfhandle(fileno(stream));
+    /* When stdin, stdout, and stderr are not associated with a stream (e.g., Windows application
+     * without console), _fileno() returns special value -2. Therefore, call to _get_osfhandle()
+     * returns INVALID_HANDLE_VALUE. If we caled _get_osfhandle() with 0, 1, or 2 instead of the
+     * result of _fileno(), _get_osfhandle() would also return -2 when the file descriptor is
+     * not associated with the stream. But because we take the _fileno() route, we need to handle
+     * only INVALID_HANDLE_VALUE (= -1).
+     * See: https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/get-osfhandle
+     */
+    if (handle == INVALID_HANDLE_VALUE) {
+        return NULL;
+    }
+    return handle;
+}
+
 int
 pyi_utils_create_child(const char *thisfile, const ARCHIVE_STATUS* status,
                        const int argc, char *const argv[])
@@ -839,9 +884,9 @@ pyi_utils_create_child(const char *thisfile, const ARCHIVE_STATUS* status,
     si.lpTitle = NULL;
     si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_NORMAL;
-    si.hStdInput = (void*)_get_osfhandle(fileno(stdin));
-    si.hStdOutput = (void*)_get_osfhandle(fileno(stdout));
-    si.hStdError = (void*)_get_osfhandle(fileno(stderr));
+    si.hStdInput = _pyi_get_stream_handle(stdin);
+    si.hStdOutput = _pyi_get_stream_handle(stdout);
+    si.hStdError = _pyi_get_stream_handle(stderr);
 
     VS("LOADER: Creating child process\n");
 

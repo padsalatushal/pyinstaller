@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2013-2022, PyInstaller Development Team.
+# Copyright (c) 2013-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -189,20 +189,23 @@ def _get_paths_for_parent_directory_preservation():
     frozen application's top-level directory.
     """
 
-    # NOTE: using all paths from `sys.path` entries instead of just `site.getsitepackages() implicitly ensures that we
-    # still collect DLLs from python's "DLLs" sub-directory into top-level directory (because "DLLs" directory is among
-    # the listed paths). On the other hand, `site.getsitepackages()` contains only python's top-level directory and its
-    # "lib/site-packages" subdirectory; so binaries from "DLLs" sub-directory would end up in sub-directory, due to
-    # being relative to python's top directory (which we would need to remove from the list).
-    orig_paths = sys.path
-
-    # Explicitly ignore top-level sys.prefix and sys.base_prefix, to prevent accidental matching of unforeseen
-    # auxiliary sub-directories. For example, under Windows anaconda, shared libraries are located in
-    # `sys.base_prefix`/Library/bin (which is not in `sys.path`), but we need to collect those to the top-level
-    # application directory.
+    # Use only site-packages paths. We have no control over contents of `sys.path`, so using all paths from that may
+    # lead to unintended behavior in corner cases. For example, if `sys.path` contained the drive root (see #7028),
+    # all paths that do not match some other sub-path rooted in that drive will end up recognized as relative to the
+    # drive root. In such case, any DLL collected from `c:\Windows\system32` will be collected into `Windows\system32`
+    # sub-directory; ucrt DLLs collected from MSVC or Windows SDK installed in `c:\Program Files\...` will end up
+    # collected into `Program Files\...` subdirectory; etc.
     #
-    # With top-level python directory excluded, we could switch from `sys.path` to `site.getsitepackages()`, but it
-    # is probably better to use `sys.path` lest it contains any extra user-defined paths.
+    # On the other hand, the DLL parent directory preservation is primarily aimed at packages installed via PyPI
+    # wheels, which are typically installed into site-packages. Therefore, limiting the directory preservation for
+    # shared libraries collected from site-packages should do the trick, and should be reasonably safe.
+    import site
+
+    orig_paths = site.getsitepackages()
+    orig_paths.append(site.getusersitepackages())
+
+    # Explicitly excluded paths. `site.getsitepackages` seems to include `sys.prefix`, which we need to exclude, to
+    # avoid issue swith DLLs in its sub-directories.
     excluded_paths = {
         pathlib.Path(sys.base_prefix).resolve(),
         pathlib.Path(sys.prefix).resolve(),
@@ -210,8 +213,10 @@ def _get_paths_for_parent_directory_preservation():
 
     paths = []
     for path in orig_paths:
+        if not path:
+            continue
         path = pathlib.Path(path).resolve()
-        # Filter out non-directories (e.g., /path/to/python3x.zip)
+        # Filter out non-directories (e.g., /path/to/python3x.zip) or non-existent paths
         if not path.is_dir():
             continue
         # Filter out explicitly excluded paths
@@ -224,6 +229,29 @@ def _get_paths_for_parent_directory_preservation():
     paths = sorted(paths, key=lambda x: len(x.parents), reverse=True)
 
     return paths
+
+
+def _select_destination_directory(src_filename, parent_dir_preservation_paths):
+    # Special handling for pywin32 on Windows, because its .pyd extensions end up linking each other, but, due to
+    # sys.path modifications the packages perform, they all end up as top-modules and should be collected into
+    # top-level directory... i.e., we must NOT preserve the directory layout in this case.
+    if compat.is_win:
+        # match <...>/site-packages/pythonwin
+        # The caller might not have resolved the src_filename, so we need to explicitly lower-case the parent_dir.name
+        # before comparing it to account for case variations.
+        parent_dir = src_filename.parent
+        if parent_dir.name.lower() == "pythonwin" and parent_dir.parent in parent_dir_preservation_paths:
+            # Collect into top-level directory.
+            return src_filename.name
+
+    # Check parent directory preservation paths
+    for parent_dir_preservation_path in parent_dir_preservation_paths:
+        if parent_dir_preservation_path in src_filename.parents:
+            # Collect into corresponding sub-directory.
+            return src_filename.relative_to(parent_dir_preservation_path)
+
+    # Collect into top-level directory.
+    return src_filename.name
 
 
 def Dependencies(lTOC, xtrapath=None, manifest=None, redirects=None):
@@ -264,18 +292,12 @@ def Dependencies(lTOC, xtrapath=None, manifest=None, redirects=None):
             seen.add(npth.upper())
 
             # Try to preserve parent directory structure, if applicable.
-            src_path = pathlib.Path(npth).resolve()
-            for parent_dir_preservation_path in parent_dir_preservation_paths:
-                if parent_dir_preservation_path in src_path.parents:
-                    # Collect into corresponding sub-directory.
-                    rel_lib_path = src_path.relative_to(parent_dir_preservation_path)
-                    lTOC.append((str(rel_lib_path), npth, 'BINARY'))
-                    # TODO: once this codepath is enabled on linux and macOS, add a symlink to the binary into the
-                    # application top-level directory.
-                    break
-            else:
-                # Collect into top-level directory.
-                lTOC.append((lib, npth, 'BINARY'))
+            # NOTE: do not resolve the source path, because on macOS and linux, it may be a versioned .so (e.g.,
+            # libsomething.so.1, pointing at libsomething.so.1.2.3), and we need to collect it under original
+            # name!
+            src_path = pathlib.Path(npth)
+            dst_path = _select_destination_directory(src_path, parent_dir_preservation_paths)
+            lTOC.append((str(dst_path), npth, 'BINARY'))
 
     return lTOC
 
@@ -708,6 +730,7 @@ def _getImports_macholib(pth):
     # In cases with @loader_path or @executable_path try to look in the same directory as the checked binary is. This
     # seems to work in most cases.
     exec_path = os.path.abspath(os.path.dirname(pth))
+    python_bin_path = os.path.abspath(os.path.dirname(sys.executable))
 
     for lib in seen:
         # Suppose that @rpath is not used for system libraries and using macholib can be avoided. macholib cannot handle
@@ -739,10 +762,15 @@ def _getImports_macholib(pth):
                 lib = dyld_find(lib, executable_path=exec_path)
                 rslt.add(lib)
             except ValueError:
-                # Starting with Big Sur, system libraries are hidden. And we do not collect system libraries on any
-                # macOS version anyway, so suppress the corresponding error messages.
-                if not in_system_path(lib) and dylib.warn_missing_lib(lib):
-                    logger.warning('Cannot find path %s (needed by %s)', lib, pth)
+                # try to resolve the executable path with the path of the executable binary for the Python interpreter
+                try:
+                    lib = dyld_find(lib, executable_path=python_bin_path)
+                    rslt.add(lib)
+                except ValueError:
+                    # Starting with Big Sur, system libraries are hidden. And we do not collect system libraries on any
+                    # macOS version anyway, so suppress the corresponding error messages.
+                    if not in_system_path(lib) and dylib.warn_missing_lib(lib):
+                        logger.warning('Cannot find path %s (needed by %s)', lib, pth)
 
     return rslt
 

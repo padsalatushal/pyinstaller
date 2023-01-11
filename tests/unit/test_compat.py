@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -52,7 +52,11 @@ def test_linux_machine(input, output):
     assert _pyi_machine(input, "Linux") == output
 
 
-def test_non_linux_machine():
+def test_windows_machine():
+    assert _pyi_machine("AMD64", "Windows") == "intel"
+    assert _pyi_machine("ARM64", "Windows") == "arm"
+
+
+def test_other_os_machine():
     assert _pyi_machine("foo", "Darwin") is None
-    assert _pyi_machine("foo", "Windows") is None
     assert _pyi_machine("foo", "FreeBSD") is None

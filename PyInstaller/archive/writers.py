@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2005-2022, PyInstaller Development Team.
+# Copyright (c) 2005-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -26,7 +26,7 @@ import zlib
 from types import CodeType
 
 from PyInstaller.building.utils import get_code_object, strip_paths_in_code
-from PyInstaller.compat import BYTECODE_MAGIC, is_win
+from PyInstaller.compat import BYTECODE_MAGIC, is_win, strict_collect_mode
 from PyInstaller.loader.pyimod01_archive import PYZ_TYPE_DATA, PYZ_TYPE_MODULE, PYZ_TYPE_NSPKG, PYZ_TYPE_PKG
 
 
@@ -169,22 +169,22 @@ class ZlibArchiveWriter(ArchiveWriter):
         super().__init__(archive_path, logical_toc)
 
     def add(self, entry):
-        name, path, typ = entry
-        if typ == 'PYMODULE':
-            typ = PYZ_TYPE_MODULE
-            if path in ('-', None):
+        name, src_path, typecode = entry
+        if typecode == 'PYMODULE':
+            typecode = PYZ_TYPE_MODULE
+            if src_path in ('-', None):
                 # This is a NamespacePackage, modulegraph marks them by using the filename '-'. (But wants to use None,
                 # so check for None, too, to be forward-compatible.)
-                typ = PYZ_TYPE_NSPKG
+                typecode = PYZ_TYPE_NSPKG
             else:
-                base, ext = os.path.splitext(os.path.basename(path))
-                if base == '__init__':
-                    typ = PYZ_TYPE_PKG
+                src_basename, _ = os.path.splitext(os.path.basename(src_path))
+                if src_basename == '__init__':
+                    typecode = PYZ_TYPE_PKG
             data = marshal.dumps(self.code_dict[name])
         else:
             # Any data files, that might be required by pkg_resources.
-            typ = PYZ_TYPE_DATA
-            with open(path, 'rb') as fh:
+            typecode = PYZ_TYPE_DATA
+            with open(src_path, 'rb') as fh:
                 data = fh.read()
             # No need to use forward slash as path-separator here since pkg_resources on Windows back slash as
             # path-separator.
@@ -195,7 +195,7 @@ class ZlibArchiveWriter(ArchiveWriter):
         if self.cipher:
             obj = self.cipher.encrypt(obj)
 
-        self.toc.append((name, (typ, self.lib.tell(), len(obj))))
+        self.toc.append((name, (typecode, self.lib.tell(), len(obj))))
         self.lib.write(obj)
 
     def update_headers(self, tocpos):
@@ -309,6 +309,8 @@ class CArchiveWriter(ArchiveWriter):
         """
         self._pylib_name = pylib_name
 
+        self._collected_names = set()  # Track collected names for strict package mode.
+
         # A CArchive created from scratch starts at 0, no leading bootloader.
         super().__init__(archive_path, logical_toc)
 
@@ -337,9 +339,33 @@ class CArchiveWriter(ArchiveWriter):
                   s  (meaning do site.py processing.
         """
         dest, source, compress, type = entry[:4]
+
+        # Strict pack/collect mode: keep track of the destination names, and raise an error if we try to add a duplicate
+        # (a file with same destination name, subject to OS case normalization rules).
+        if strict_collect_mode:
+            normalized_dest = None
+            if type in ('o', 's', 'm', 'M'):
+                # Exempt options, python source script, and modules from the check
+                pass
+            else:
+                # Everything else; normalize the case
+                normalized_dest = os.path.normcase(dest)
+            # Check for existing entry, if applicable
+            if normalized_dest:
+                if normalized_dest in self._collected_names:
+                    raise ValueError(
+                        f"Attempting to collect a duplicated file into CArchive: {normalized_dest} (type: {type})"
+                    )
+                self._collected_names.add(normalized_dest)
+
         try:
-            if type in ('o', 'd'):
+            if type == 'o':
                 return self._write_blob(b"", dest, type)
+
+            elif type == 'd':
+                # Dependency; merge source (= reference path prefix) and dest (= name) into single-string format that is
+                # parsed by bootloader.
+                return self._write_blob(b"", f"{source}:{dest}", type)
 
             if type == 's':
                 # If it is a source code file, compile it to a code object and marshal the object, so it can be

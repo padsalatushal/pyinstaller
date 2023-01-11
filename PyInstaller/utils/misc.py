@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2013-2022, PyInstaller Development Team.
+# Copyright (c) 2013-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
 # or later) with exception for distributing the bootloader.
@@ -221,3 +221,14 @@ def decode(raw: bytes):
 
     encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
     return raw.decode(encoding)
+
+
+def is_iterable(arg):
+    """
+    Check if the passed argument is an iterable."
+    """
+    try:
+        iter(arg)
+    except TypeError:
+        return False
+    return True
