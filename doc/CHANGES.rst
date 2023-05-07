@@ -15,6 +15,177 @@ Changelog for PyInstaller
 
 .. towncrier release notes start
 
+5.10.1 (2023-04-14)
+-------------------
+
+Bugfix
+~~~~~~
+
+* Fix regression on platforms with strict data alignment requirements (such as
+  linux on ``armhf``/``armv7``), caused by bug in PKG/CArchive generation that
+  was introduced during the archive writer code cleanup. The regression caused
+  executable to terminate with ``Bus error`` on the affected platforms, such as
+  32-bit Debian Buster on Raspberry Pi 4. (:issue:`7566`)
+
+
+5.10.0 (2023-04-11)
+-------------------
+
+Bugfix
+~~~~~~
+
+* (Linux) Ignore the executable name resolution based on ``/proc/self/exe``
+  when the PyInstaller-frozen executable is launched via the ``ld.so``
+  dynamic loader executable. In such cases, the resolved name points to
+  the ``ld.so`` executable, causing the PyInstaller-frozen executable to
+  fail with *Cannot open PyInstaller archive from executable...* error.
+  (:issue:`7551`)
+* Ensure that binaries that are manually specified in the .spec file (or via
+  corresponding :option:`--add-binary` or :option:`--collect-binaries`
+  command-line switches) undergo the binary dependency analysis, so their
+  dependencies are automatically collected. (:issue:`7522`)
+* Extend the ``excludedimports`` mechanism rework from :issue:`7066`
+  to properly handle relative imports within the package. For example,
+  ensure that ``excludedimports = ['a.b']`` within the hook for package
+  ``a`` takes effect when package ``a`` does ``from . import b`` (in
+  addition to ``from a import b``). (:issue:`7495`)
+* Extend the ``excludedimports`` mechanism rework from :issue:`7066`
+  to properly handle the case of multiple submodules being imported in a
+  single ``from ... import ...`` statement (using absolute or relative import).
+  For example, when package ``c`` does ``from d import e, f``, we need to
+  consider potential ``excludedimports`` rules matching package ``d`` and,
+  if ``d`` itself is not excluded, potential rules individually matching
+  ``d.e`` and ``d.f``. (:issue:`7495`)
+* Fix marshal error in binary dependency search stage, caused by the list of
+  collected packages containing a ``modulegraph.Alias`` instance instead of only
+  plain :class:`str` instances. (:issue:`7515`)
+* Reorganize the ``multiprocessing`` run-time hook to override ``Popen``
+  implementations only for ``spawn`` and ``forkserver`` start methods,
+  but not for the ``fork`` start method. This avoids a dead-lock when
+  attempting to perform nested multiprocessing using the ``fork`` start
+  method, which occurred due to override-provided lock (introduced in
+  :issue:`7411`) being copied in its locked state into the forked
+  sub-process. (:issue:`7494`)
+
+
+Incompatible Changes
+~~~~~~~~~~~~~~~~~~~~
+
+* The ``archive_viewer`` utility has been rewritten with modified
+  command-line interface (``--log`` has been renamed to ``--list``) and
+  with changed output formatting. (:issue:`7518`)
+
+
+Hooks
+~~~~~
+
+* (Windows) Improve support for ``matplotlib >= 3.7.0`` by collecting all
+  ``delvewheel``-generated files from the ``matplotlib.libs`` directory,
+  including the load-order file. This is required when PyPI ``matplotlib``
+  wheels are used in combination with Anaconda python 3.8 and 3.9.
+  (:issue:`7503`)
+* Add hook for ``PyQt6.QtSpatialAudio`` module, which was added in
+  ``PyQt6`` 6.5.0. (:issue:`7549`)
+* Add hook for ``PyQt6.QtTextToSpeech`` module, which was added in
+  ``PyQt6`` 6.4 series. (:issue:`7549`)
+* Extend ``PySide6`` hooks for ``PySide6`` 6.5.0 compatibility: add hooks
+  for ``QtLocation``, ``QtTextToSpeech``, and ``QtSerialBus`` modules
+  that were introduced in ``PySide`` 6.5.0. (:issue:`7549`)
+
+
+Documentation
+~~~~~~~~~~~~~
+
+* Clarify the supported color specification formats and apply consistent
+  formatting of default parameter values in the splash screen documentation.
+  (:issue:`7529`)
+
+
+5.9.0 (2023-03-13)
+------------------
+
+Features
+~~~~~~~~
+
+* Choose :ref:`hooks provided by packages <provide hooks with package>` over
+  hooks from
+  `pyinstaller-hooks-contrib <https://github.com/pyinstaller/pyinstaller-hooks-contrib/>`_
+  if both provide the same hook. (:issue:`7456`)
+
+
+Bugfix
+~~~~~~
+
+* Fix changes to :data:`sys.path` made in the spec file being ignored by hook
+  utility functions (e.g. :func:`~PyInstaller.utils.hooks.collect_submodules`).
+  (:issue:`7456`)
+
+
+5.8.0 (2023-02-11)
+------------------
+
+Features
+~~~~~~~~
+
+* Compile the collected GLib schema files using ``glib-schema-compiler``
+  instead of collecting the pre-compiled ``gschemas.compiled`` file, in
+  order to properly support collection of schema files from multiple
+  locations. Do not collect the source schema files anymore, as only
+  ``gschemas.compiled`` file should be required at run time. (:issue:`7394`)
+
+
+Bugfix
+~~~~~~
+
+* (Cygwin) Avoid using Windows-specific codepaths that require
+  ``pywin32-ctypes`` functionality that is not available in Cygwin
+  environment. (:issue:`7382`)
+* (non-Windows) Fix race condition in environment modification done by
+  ``multiprocessing`` runtime hook when multiple threads concurrently
+  spawn processes using the ``spawn`` method. (:issue:`7410`)
+* (Windows) Changes in the version info file now trigger rebuild of the
+  executable file. (:issue:`7338`)
+* Disallow empty source path in the ``binaries`` and ``datas`` tuples
+  that are returned from the hooks and sanitized in the
+  ``PyInstaller.building.utils.format_binaries_and_datas``. The empty
+  source path is usually result of an error in the hook's path retrieval
+  code, and causes implicit collection of the whole current working
+  directory. This is never the intended behavior, so raise a ``SystemExit``.
+  (:issue:`7384`)
+* Fix *unknown log level* error raised with ``--log-level=DEPRECATION``.
+  (:issue:`7413`)
+
+
+Incompatible Changes
+~~~~~~~~~~~~~~~~~~~~
+
+* The deprecated ``PEP-302`` ``find_module()`` and ``load_module()``
+  methods have been removed from PyInstaller's ``FrozenImporter``. These
+  methods have not been used by python's import machinery since
+  python 3.4 and ``PEP-451``, and were effectively left untested and
+  unmaintained. The removal affects 3rd party code that still relies
+  on ``PEP-302`` finder/loader methods instead of the ``PEP-451`` ones.
+  (:issue:`7344`)
+
+
+Hooks
+~~~~~
+
+* Collect ``multimedia`` plugins that are required by ``QtMultimedia``
+  module starting with Qt6 v6.4.0. (:issue:`7352`)
+* Do not collect ``designer`` plugins as part of ``QtUiTools`` module in
+  ``PySide2`` and ``PySide6`` bindings. Instead, tie the collection of
+  plugins only to the ``QtDesigner`` module. (:issue:`7322`)
+
+
+Module Loader
+~~~~~~~~~~~~~
+
+* Remove deprecated ``PEP-302`` functionality from ``FrozenImporter``.
+  The ``find_module()`` and ``load_module()`` methods are deprecated
+  since python 3.4 in favor of ``PEP-451`` loader. (:issue:`7344`)
+
+
 5.7.0 (2022-12-04)
 ------------------
 

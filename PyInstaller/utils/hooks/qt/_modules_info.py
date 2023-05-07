@@ -249,20 +249,19 @@ QT_MODULES_INFO = (
     _QtModuleDef("QtHttpServer", shared_lib="HttpServer", bindings=["PySide6"]),
 
     # *** qt/qtlocation ***
-    # Qt5-only Qt module.
+    # QtLocation was reintroduced in Qt6 v6.5.0.
     _QtModuleDef(
         "QtLocation",
         shared_lib="Location",
         translation="qtlocation",
         plugins=["geoservices"],
-        bindings=["PySide2", "PyQt5"]
+        bindings=["PySide2", "PyQt5", "PySide6"]
     ),
     _QtModuleDef(
         "QtPositioning",
         shared_lib="Positioning",
         translation="qtlocation",
         plugins=["position"],
-        bindings=["PySide2", "PyQt5"]
     ),
 
     # *** qt/qtmacextras ***
@@ -291,8 +290,8 @@ QT_MODULES_INFO = (
         bindings=["PySide6", "PyQt6"]
     ),
     _QtModuleDef("QtMultimediaWidgets", shared_lib="MultimediaWidgets"),
-    # Qt6-only Qt module; python module is available in PySide6 >= 6.4.0
-    _QtModuleDef("QtSpatialAudio", shared_lib="SpatialAudio", bindings=["PySide6"]),
+    # Qt6-only Qt module; python module is available in PySide6 >= 6.4.0 and PyQt6 >= 6.5.0
+    _QtModuleDef("QtSpatialAudio", shared_lib="SpatialAudio", bindings=["PySide6", "PyQt6"]),
 
     # *** qt/qtnetworkauth ***
     # QtNetworkAuth python module is available in all bindings but PySide2.
@@ -350,7 +349,9 @@ QT_MODULES_INFO = (
 
     # *** qt/qtserialbus ***
     # No python module; shared library -> plugins association entry.
-    _QtModuleDef(None, shared_lib="SerialBus", plugins=["canbus"]),
+    # PySide6 6.5.0 introduced python module.
+    _QtModuleDef(None, shared_lib="SerialBus", plugins=["canbus"], bindings=["!PySide6"]),
+    _QtModuleDef("QtSerialBus", shared_lib="SerialBus", plugins=["canbus"], bindings=["PySide6"]),
 
     # *** qt/qtsvg ***
     _QtModuleDef("QtSvg", shared_lib="Svg"),
@@ -358,8 +359,7 @@ QT_MODULES_INFO = (
     _QtModuleDef("QtSvgWidgets", shared_lib="SvgWidgets", bindings=["PySide6", "PyQt6"]),
 
     # *** qt/qtspeech ***
-    # Qt5-only Qt module.
-    _QtModuleDef("QtTextToSpeech", shared_lib="TextToSpeech"),
+    _QtModuleDef("QtTextToSpeech", shared_lib="TextToSpeech", plugins=["texttospeech"]),
 
     # *** qt/qttools ***
     # QtDesigner python module is available in all bindings but PySide2.

@@ -2,11 +2,11 @@
 # Copyright (c) 2021-2023, PyInstaller Development Team.
 #
 # Distributed under the terms of the GNU General Public License (version 2
-# or later) with exception for distributing the bootloader.
+# or later) or, at the user's discretion, the MIT License.
 #
 # The full license is in the file COPYING.txt, distributed with this software.
 #
-# SPDX-License-Identifier: (GPL-2.0-or-later WITH Bootloader-exception)
+# SPDX-License-Identifier: (GPL-2.0-or-later WITH Bootloader-exception OR MIT)
 # -----------------------------------------------------------------------------
 """
 The child process to be invoked by IsolatedPython().
@@ -90,6 +90,8 @@ if __name__ == '__main__':
 
     with _open(read_from_parent, "rb") as read_fh:
         with _open(write_to_parent, "wb") as write_fh:
+            sys.path = loads(b64decode(read_fh.readline()))
+
             # Keep receiving and running instructions until the parent sends the signal to stop.
             while run_next_command(read_fh, write_fh):
                 pass

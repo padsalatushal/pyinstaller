@@ -20,16 +20,18 @@ pytest-xdist
 
 # Plugin to abort hanging tests.
 pytest-timeout >= 2.0.0
-# allows specifying order without duplicates
+
+# Allows specifying order without duplicates
 pytest-drop-dup-tests
-# reruns failed flaky tests
-pytest-rerunfailures
+
+# Ability to retry a failed test
+flaky
 
 # Better subprocess alternative with implemented timeout.
 psutil
 
-# Check new flake8 violations on pull requests
-flake8
+# Check new linter violations on pull requests
+ruff
 
 # These are required by some of basic tests
 pywin32; sys_platform == 'win32'
@@ -38,6 +40,3 @@ lxml; python_version < '3.11'
 
 # crypto support (`--key` option)
 tinyaes ~= 1.0; python_version < '3.11'
-
-# Ability to retry a failed test
-flaky

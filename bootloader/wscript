@@ -157,18 +157,25 @@ def options(ctx):
         dest='target_arch',
     )
     ctx.add_option(
-        '--show-warnings',
-        action='store_true',
-        help='Make gcc print out the warnings we consider as being non-fatal. All other warnings are still treated as '
-        'errors. Remember to delete the `build` directory first to ensure all files are actually recompiled.',
-        dest='show_warnings',
-    )
-    ctx.add_option(
         '--static-zlib',
         action='store_true',
         help='Statically compile zlib into the bootloaders rather than dynamically linking to the system-wide copy. '
         'This is always done on Windows.',
         default=False,
+    )
+    ctx.add_option(
+        '--tests',
+        action='store_true',
+        help='Enable cmocka-based tests if cmocka library is found. The tests are disabled by default.',
+        default=False,
+        dest='enable_tests',
+    )
+    ctx.add_option(
+        '--no-tests',
+        action='store_false',
+        help='Disable cmocka-based tests, even if cmocka library is found. The tests are disabled by default.',
+        default=False,
+        dest='enable_tests',
     )
 
     grp = ctx.add_option_group('Linux Standard Base (LSB) compliance', 'These options have effect only on Linux.')
@@ -548,9 +555,18 @@ def configure(ctx):
         # Turn on all warnings to improve code quality and avoid errors. Unused variables and unused functions are still
         # accepted to avoid even more conditional code. If you are ever tempted to change this, review the commit
         # history of this place first.
-        ctx.env.append_value('CFLAGS', ['-Wall', '-Werror', '-Wno-error=unused-variable', '-Wno-error=unused-function'])
-        if not ctx.options.show_warnings:
-            ctx.env.append_value('CFLAGS', ['-Wno-unused-variable', '-Wno-unused-function'])
+        ctx.env.append_value(
+            'CFLAGS', [
+                '-Wall',
+                '-Werror',
+                '-Wno-error=unused-variable',
+                '-Wno-error=unused-function',
+            ]
+        )
+
+        # -Wno-error=unused-but-set-variable is not available on old gcc versions (e.g., 4.4.3)
+        if ctx.check_cc(cflags='-Wno-error=unused-but-set-variable', execute=False, mandatory=False):
+            ctx.env.append_value('CFLAGS', ['-Wno-error=unused-but-set-variable'])
 
     # ** Defines, includes **
 

@@ -40,6 +40,7 @@ from PyInstaller.depend.analysis import initialize_modgraph
 from PyInstaller.depend.utils import create_py3_base_library, scan_code_for_ctypes
 from PyInstaller import isolated
 from PyInstaller.utils.misc import absnormpath, get_path_to_toplevel_modules, get_unicode_modules, mtime
+from PyInstaller.utils.hooks.gi import compile_glib_schema_files
 
 if is_win:
     from PyInstaller.utils.win32 import winmanifest
@@ -107,6 +108,8 @@ def discover_hook_directories():
     from PyInstaller.log import logger
 
     entry_points = pkg_resources.iter_entry_points('pyinstaller40', 'hook-dirs')
+    # Ensure that pyinstaller_hooks_contrib comes last so that hooks from packages providing their own take priority.
+    entry_points = sorted(entry_points, key=lambda x: x.module_name == "_pyinstaller_hooks_contrib.hooks")
 
     hook_directories = []
     for entry_point in entry_points:
@@ -408,10 +411,7 @@ class Analysis(Target):
         self.noarchive = noarchive
         self.module_collection_mode = module_collection_mode or {}
 
-        self.__postinit__()
-
-        # TODO: create a function to convert datas/binaries from 'hook format' to TOC.
-        # Initialise 'binaries' and 'datas' with lists specified in .spec file.
+        # Initialize 'binaries' and 'datas' with lists specified in .spec file.
         if binaries:
             logger.info("Appending 'binaries' from .spec")
             for name, pth in format_binaries_and_datas(binaries, workingdir=spec_dir):
@@ -420,6 +420,8 @@ class Analysis(Target):
             logger.info("Appending 'datas' from .spec")
             for name, pth in format_binaries_and_datas(datas, workingdir=spec_dir):
                 self.datas.append((name, pth, 'DATA'))
+
+        self.__postinit__()
 
     _GUTS = (  # input parameters
         ('inputs', _check_guts_eq),  # parameter `scripts`
@@ -618,6 +620,10 @@ class Analysis(Target):
 
         # Extend the binaries list with all the Extensions modulegraph has found.
         self.binaries = self.graph.make_binaries_toc(self.binaries)
+
+        # Post-process GLib schemas
+        self.datas = compile_glib_schema_files(self.datas, os.path.join(CONF['workpath'], "_pyi_gschema_compilation"))
+        self.datas = TOC(self.datas)
 
         # Process the pure-python modules list. Depending on the collection mode, these entries end up either in "pure"
         # list for collection into the PYZ archive, or in the "datas" list for collection as external data files.

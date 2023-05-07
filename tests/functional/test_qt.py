@@ -18,7 +18,7 @@ from PyInstaller import isolated
 from PyInstaller.compat import is_win, is_darwin
 from PyInstaller.utils.hooks import is_module_satisfies, can_import_module
 from PyInstaller.utils.hooks.qt import get_qt_library_info
-from PyInstaller.utils.tests import importorskip, requires, xfail, skipif
+from PyInstaller.utils.tests import importorskip, requires, skipif
 
 PYQT5_NEED_OPENGL = pytest.mark.skipif(
     is_module_satisfies('PyQt5 <= 5.10.1'),
@@ -144,18 +144,28 @@ def test_Qt_QtQml(pyi_builder, QtPyLib):
     )
 
 
-@pytest.mark.parametrize(
-    'QtPyLib', [
-        qt_param('PyQt5'),
-        qt_param('PyQt6'),
-        qt_param('PySide2', marks=xfail(is_win, reason='PySide2 wheels on Windows do not include SSL DLLs.')),
-        qt_param('PySide6', marks=xfail(is_win, reason='PySide6 wheels on Windows do not include SSL DLLs.')),
-    ]
-)
+@QtPyLibs
 def test_Qt_QtNetwork_SSL_support(pyi_builder, QtPyLib):
+    # Skip the test if QtNetwork does not support SSL (e.g., due to lack of compatible OpenSSL shared library on the
+    # test system).
+    @isolated.decorate
+    def check_ssl_support(package):
+        import sys
+        import importlib
+        QtCore = importlib.import_module('.QtCore', package)
+        QtNetwork = importlib.import_module('.QtNetwork', package)
+        app = QtCore.QCoreApplication(sys.argv)  # noqa: F841
+        return QtNetwork.QSslSocket.supportsSsl()
+
+    if not check_ssl_support(QtPyLib):
+        pytest.skip('QtNetwork does not support SSL on this platform.')
+
     pyi_builder.test_source(
         """
+        import sys
+        from {0}.QtCore import QCoreApplication
         from {0}.QtNetwork import QSslSocket
+        app = QCoreApplication(sys.argv)
         assert QSslSocket.supportsSsl()
         """.format(QtPyLib), **USE_WINDOWED_KWARG
     )
@@ -165,11 +175,12 @@ def test_Qt_QtNetwork_SSL_support(pyi_builder, QtPyLib):
 def test_Qt_QTranslate(pyi_builder, QtPyLib):
     pyi_builder.test_source(
         """
+        import sys
         from {0}.QtWidgets import QApplication
         from {0}.QtCore import QTranslator, QLocale, QLibraryInfo
 
         # Initialize Qt default translations
-        app = QApplication([])
+        app = QApplication(sys.argv)
         translator = QTranslator()
         locale = QLocale('de_DE')
         if hasattr(QLibraryInfo, 'path'):
@@ -209,7 +220,7 @@ def test_Qt_Ui_file(tmpdir, pyi_builder, data_dir, QtPyLib):
         is_qt6 = '{0}' in {{'PyQt6', 'PySide6'}}
         is_pyqt = '{0}' in {{'PyQt5', 'PyQt6'}}
 
-        app = QApplication([])
+        app = QApplication(sys.argv)
 
         # In Qt6, QtQuick supports multiple render APIs and automatically selects one.
         # However, QtQuickWidgets.QQuickWidget that is used by the test UI file supports only OpenGL,
@@ -303,7 +314,7 @@ def _test_Qt_QtWebEngineWidgets(pyi_builder, qt_flavor):
             </html>
         '''
 
-        app = QApplication([])
+        app = QApplication(sys.argv)
 
         class JSResultTester:
 
@@ -373,7 +384,7 @@ def _test_Qt_QtWebEngineQuick(pyi_builder, qt_flavor):
             from {0}.QtWebEngine import QtWebEngine as QtWebEngineQuick
         QtWebEngineQuick.initialize()
 
-        app = QGuiApplication([])
+        app = QGuiApplication(sys.argv)
         engine = QQmlApplicationEngine()
         engine.loadData(b'''
             import QtQuick 2.0
@@ -459,11 +470,19 @@ def test_Qt_QtWebEngineQuick_PyQt6(pyi_builder):
 
 
 @requires('PySide6 >= 6.2.2')
+@pytest.mark.skipif(
+    is_module_satisfies('PySide6 == 6.5.0') and is_win,
+    reason='PySide6 6.5.0 PyPI wheels for Windows are missing opengl32sw.dll.'
+)
 def test_Qt_QtWebEngineWidgets_PySide6(pyi_builder):
     _test_Qt_QtWebEngineWidgets(pyi_builder, 'PySide6')
 
 
 @requires('PySide6 >= 6.2.2')
+@pytest.mark.skipif(
+    is_module_satisfies('PySide6 == 6.5.0') and is_win,
+    reason='PySide6 6.5.0 PyPI wheels for Windows are missing opengl32sw.dll.'
+)
 def test_Qt_QtWebEngineQuick_PySide6(pyi_builder):
     _test_Qt_QtWebEngineQuick(pyi_builder, 'PySide6')
 
@@ -496,10 +515,11 @@ def test_Qt_QtMultimedia_player_init(pyi_builder, QtPyLib):
 def test_Qt_QtMultimedia_with_true_property(pyi_builder, QtPyLib):
     pyi_builder.test_source(
         """
+        import sys
         from {0} import QtCore, QtMultimedia
         from __feature__ import true_property
 
-        app = QtCore.QCoreApplication()
+        app = QtCore.QCoreApplication(sys.argv)
         """.format(QtPyLib), **USE_WINDOWED_KWARG
     )
 

@@ -46,6 +46,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -qq --no-install-recommends \
+            libcmocka-dev \
             libxml2-dev libxslt1-dev gfortran libatlas-base-dev \
             libespeak1 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
             libxkbcommon-x11-0 libxcb-icccm4 libxcb1 openssl \
@@ -80,17 +81,17 @@ jobs:
         run: |
           # Compile bootloader
           cd bootloader
-          CC="gcc -std=gnu90" python waf all
+          CC="gcc -std=gnu90" python waf --tests all
 
       - name: Check if bootloader is buildable with --static-zlib option
         if: startsWith(matrix.os, 'ubuntu')
-        run: cd bootloader && python waf --static-zlib all
+        run: cd bootloader && python waf --static-zlib --tests all
 
       - name: Check if bootloader is buildable for Windows ARM
         if: startsWith(matrix.os, 'windows')
         run: |
             cd bootloader
-            python waf --target-arch=64bit-arm all
+            python waf --tests --target-arch=64bit-arm all
             ls ../PyInstaller/bootloader/Windows-64bit-arm
 
       - name: Install PyInstaller
@@ -100,7 +101,7 @@ jobs:
 
           # Compile bootloader
           cd bootloader
-          python waf all
+          python waf --tests all
           cd ..
 
           # Install PyInstaller.
@@ -114,7 +115,6 @@ jobs:
           pip install --progress-bar=off --upgrade --requirement tests/requirements-tools.txt
 
       - name: Install test dependencies (libraries)
-        id: install_libraries
         if: ${{ !endsWith(matrix.python-version, '-dev') }}
         run: |
           pip install --progress-bar=off --upgrade --requirement tests/requirements-libraries.txt
@@ -144,12 +144,21 @@ jobs:
         run: >
             pytest
             -n 3 --maxfail 3 --durations 10 tests/unit tests/functional
-            --force-flaky --no-flaky-report --reruns 3 --reruns-delay 10
+            --force-flaky --no-flaky-report
 
-      # hooksample is installed as part of tests/requirements-libraries.txt, so run this step only if we
-      # installed all libraries.
+      # Install and test PyInstaller Hook Sample, to ensure that tests declared in
+      # entry-points are discovered.
+      - name: Install hooksample
+        run: pip install "https://github.com/pyinstaller/hooksample/archive/v4.0rc1.zip"
+
+      - name: Inject bogus hook
+        shell: python
+        run: |
+          from _pyinstaller_hooks_contrib.hooks.stdhooks import __path__ as path
+          with open(path[0] + "/hook-pyi_hooksample.py", "w") as f:
+              f.write('assert 0, "Wrong hook! Use the pyi_hooksample copy instead!"\n')
+
       - name: Run hooksample tests
-        if: steps.install_libraries.outcome == 'success'
         run: |
           # The ``run_tests`` script is invoked with the ``-c`` option to
           # specify a ``pytest.ini``, rather than allowing pytest to find
@@ -168,7 +177,7 @@ jobs:
           foo
           pytest
           -n 3 --maxfail 3 --durations 10 tests/unit tests/functional
-          --force-flaky --no-flaky-report --reruns 3 --reruns-delay 10
+          --force-flaky --no-flaky-report
 
       # Verify that installing from sdist works. This is mostly just a verification that the MANIFEST.in contains
       # all the extras needed to compile the bootloader.

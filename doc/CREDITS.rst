@@ -5,6 +5,38 @@ Thanks goes to all the kind PyInstaller contributors who have contributed
 new code, bug reports, fixes, comments and ideas. A brief list follows,
 please let us know if your name is omitted by accident:
 
+Contributions to PyInstaller 5.10.1
+-----------------------------------
+
+* Rok Mandeljc
+* Christian Clauss
+
+Contributions to PyInstaller 5.10.0
+-----------------------------------
+
+* Rok Mandeljc
+* Michael Shigorin
+* V. Armando Solé
+
+Contributions to PyInstaller 5.9.0
+----------------------------------
+
+* Brénainn Woodsend
+* Hugo van Kemenade
+* Rok Mandeljc
+* Ievgen Popovych
+
+Contributions to PyInstaller 5.8.0
+----------------------------------
+
+* Rok Mandeljc
+* Brénainn Woodsend
+* Arjan Molenaar
+* Breeze
+* Ievgen Popovych
+* João Vitor
+* bersbersbers
+
 Contributions to PyInstaller 5.7.0
 ----------------------------------
 
